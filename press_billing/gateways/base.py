@@ -54,11 +54,33 @@ class GatewayTimeout(GatewayError):
 	"""Network/timeout failure. Retry MUST reuse the same idempotency key."""
 
 
+class GatewayUnsupported(GatewayError):
+	"""The gateway does not support this optional capability."""
+
+
 class GatewayAdapter(ABC):
 	"""One instance per Payment Gateway config row."""
 
 	def __init__(self, gateway):
 		self.gateway = gateway
+
+	# --- payment method lifecycle (universal) -------------------------------
+
+	@abstractmethod
+	def setup_payment_method(self, team, setup_data: dict) -> dict:
+		"""Begin adding a payment method (Stripe SetupIntent / Razorpay mandate order).
+
+		Returns the client-side handles (client_secret / order_id + key) the UI
+		needs to complete authorisation. No money is moved here.
+		"""
+		...
+
+	@abstractmethod
+	def validate_payment_method(self, payment_method) -> bool:
+		"""Prove the method is live (Stripe micro-charge + auto-refund)."""
+		...
+
+	# --- charge / refund / webhooks (universal) -----------------------------
 
 	@abstractmethod
 	def charge(self, invoice, payment_method, idempotency_key: str) -> PaymentResult: ...
@@ -74,3 +96,20 @@ class GatewayAdapter(ABC):
 
 	@abstractmethod
 	def get_transaction_status(self, gateway_txn_id: str) -> str: ...
+
+	# --- optional, gateway-specific capabilities ----------------------------
+	# Default: unsupported. Implemented only where the gateway has the concept.
+
+	def create_customer(self, team) -> str:
+		raise GatewayUnsupported(f"{type(self).__name__} does not support create_customer")
+
+	def verify_payment_signature(self, data: dict) -> bool:
+		"""Verify a client-side checkout callback signature (distinct from the
+		webhook signature). Razorpay only; Stripe confirms via intent status."""
+		raise GatewayUnsupported(f"{type(self).__name__} does not support verify_payment_signature")
+
+	def cancel_mandate(self, mandate_reference: str, customer_reference: str | None = None) -> bool:
+		raise GatewayUnsupported(f"{type(self).__name__} does not support cancel_mandate")
+
+	def get_mandate_status(self, mandate_reference: str) -> str:
+		raise GatewayUnsupported(f"{type(self).__name__} does not support get_mandate_status")

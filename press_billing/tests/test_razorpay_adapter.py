@@ -110,3 +110,58 @@ class TestRazorpayAdapter(GatewayAdapterContract, IntegrationTestCase):
 		}
 		headers = {"X-Razorpay-Event-Id": "evt_r1"}
 		return payload, headers, "evt_r1", "payment.captured"
+
+	def setup_inputs(self):
+		return "Team-1", {"customer_id": "cust_x", "max_amount": 5000}
+
+	@contextmanager
+	def stub_setup(self):
+		with self._client() as c:
+			c.order.create.return_value = {"id": "order_mandate", "amount": 100}
+			yield
+
+	def validation_inputs(self):
+		return frappe._dict(gateway_method_id="token_x")
+
+	@contextmanager
+	def stub_validation_success(self):
+		# Razorpay validation is the mandate authorisation itself (no micro-charge).
+		with self._client():
+			yield
+
+	# --- optional, gateway-specific capabilities ----------------------------
+
+	def test_create_customer_returns_id(self):
+		adapter = self.make_adapter()
+		with self._client() as c:
+			c.customer.create.return_value = {"id": "cust_new"}
+			cid = adapter.create_customer(frappe._dict(name="Team-1", user="a@b.com", phone="+91"))
+		self.assertEqual(cid, "cust_new")
+
+	def test_verify_payment_signature_valid(self):
+		adapter = self.make_adapter()
+		data = {"razorpay_payment_id": "p", "razorpay_order_id": "o", "razorpay_signature": "s"}
+		with self._client() as c:
+			c.utility.verify_payment_signature.return_value = True
+			self.assertTrue(adapter.verify_payment_signature(data))
+
+	def test_verify_payment_signature_invalid(self):
+		adapter = self.make_adapter()
+		with self._client() as c:
+			c.utility.verify_payment_signature.side_effect = razorpay.errors.SignatureVerificationError(
+				"bad"
+			)
+			self.assertFalse(adapter.verify_payment_signature({}))
+
+	def test_cancel_mandate_revokes_token(self):
+		adapter = self.make_adapter()
+		with self._client() as c:
+			c.token.cancel.return_value = {"deleted": True}
+			self.assertTrue(adapter.cancel_mandate("token_x", customer_reference="cust_x"))
+			c.token.cancel.assert_called_once_with("cust_x", "token_x")
+
+	def test_get_mandate_status(self):
+		adapter = self.make_adapter()
+		with self._client() as c:
+			c.invoice.fetch.return_value = {"status": "authenticated"}
+			self.assertEqual(adapter.get_mandate_status("order_x"), "authenticated")

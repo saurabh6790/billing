@@ -34,6 +34,36 @@ class RazorpayAdapter(GatewayAdapter):
 			auth=(self.gateway.get_password("api_key"), self.gateway.get_password("api_secret"))
 		)
 
+	def setup_payment_method(self, team, setup_data: dict) -> dict:
+		"""Create a UPI Autopay mandate authorisation order.
+
+		The ceiling (`max_amount`) becomes the mandate token's max; the UI runs
+		Razorpay Checkout against the returned order to capture the token.
+		"""
+		client = self._client()
+		max_amount = int(setup_data.get("max_amount") or 0)
+		order = client.order.create(
+			{
+				"amount": 100,
+				"currency": "INR",
+				"method": "upi",
+				"customer_id": setup_data.get("customer_id"),
+				"receipt": "Authorize UPI Autopay",
+				"token": {"max_amount": max_amount * 100},
+				"notes": {"team": team},
+			}
+		)
+		return {
+			"order_id": order.get("id"),
+			"customer_id": setup_data.get("customer_id"),
+			"key_id": self.gateway.get_password("api_key"),
+		}
+
+	def validate_payment_method(self, payment_method) -> bool:
+		"""Razorpay validation is the mandate authorisation itself (token.confirmed);
+		a live token is the proof. No separate micro-charge."""
+		return bool(payment_method.gateway_method_id)
+
 	def charge(self, invoice, payment_method, idempotency_key: str) -> PaymentResult:
 		"""Off-session recurring charge against a mandate token.
 
@@ -121,3 +151,34 @@ class RazorpayAdapter(GatewayAdapter):
 
 	def get_transaction_status(self, gateway_txn_id: str) -> str:
 		return self._client().payment.fetch(gateway_txn_id).get("status")
+
+	def create_customer(self, team) -> str:
+		customer = self._client().customer.create(
+			{
+				"name": getattr(team, "name", None),
+				"email": team.get("user") if hasattr(team, "get") else None,
+				"contact": team.get("phone") if hasattr(team, "get") else None,
+				"fail_existing": 0,
+			}
+		)
+		return customer.get("id")
+
+	def verify_payment_signature(self, data: dict) -> bool:
+		"""Verify a Razorpay Checkout callback (payment_id + order_id + signature).
+
+		Distinct from the webhook signature; used when the client completes UPI
+		Autopay authorisation or a one-time order.
+		"""
+		try:
+			self._client().utility.verify_payment_signature(data)
+			return True
+		except razorpay.errors.SignatureVerificationError:
+			return False
+
+	def cancel_mandate(self, mandate_reference: str, customer_reference: str | None = None) -> bool:
+		"""Revoke the UPI Autopay token (mandate_reference = token id)."""
+		self._client().token.cancel(customer_reference, mandate_reference)
+		return True
+
+	def get_mandate_status(self, mandate_reference: str) -> str:
+		return self._client().invoice.fetch(mandate_reference).get("status")

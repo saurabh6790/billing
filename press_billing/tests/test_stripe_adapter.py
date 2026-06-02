@@ -4,9 +4,11 @@
 from contextlib import contextmanager
 from unittest.mock import patch
 
+import frappe
 import stripe
 from frappe.tests import IntegrationTestCase
 
+from press_billing.gateways.base import GatewayUnsupported
 from press_billing.gateways.stripe_adapter import StripeAdapter
 from press_billing.tests.gateway_contract import GatewayAdapterContract
 
@@ -105,3 +107,50 @@ class TestStripeAdapter(GatewayAdapterContract, IntegrationTestCase):
 		}
 		# Stripe carries the event id in the body, so headers are irrelevant.
 		return payload, {}, "evt_123", "payment_intent.succeeded"
+
+	def setup_inputs(self):
+		import frappe
+
+		return "Team-1", {"customer_id": "cus_test"}
+
+	@contextmanager
+	def stub_setup(self):
+		import frappe
+
+		intent = frappe._dict(id="seti_1", client_secret="seti_1_secret")
+		with patch.object(stripe.SetupIntent, "create", return_value=intent):
+			yield
+
+	def validation_inputs(self):
+		import frappe
+
+		return frappe._dict(gateway_method_id="pm_test", customer_id="cus_test")
+
+	@contextmanager
+	def stub_validation_success(self):
+		import frappe
+
+		intent = frappe._dict(id="pi_micro", status="succeeded")
+		with (
+			patch.object(stripe.PaymentIntent, "create", return_value=intent),
+			patch.object(stripe.Refund, "create", return_value=frappe._dict(status="succeeded")),
+		):
+			yield
+
+	# --- optional, gateway-specific capabilities ----------------------------
+
+	def test_create_customer_returns_id(self):
+		adapter = self.make_adapter()
+		with patch.object(stripe.Customer, "create", return_value=frappe._dict(id="cus_new")):
+			cid = adapter.create_customer(frappe._dict(name="Team-1", user="a@b.com"))
+		self.assertEqual(cid, "cus_new")
+
+	def test_get_mandate_status(self):
+		adapter = self.make_adapter()
+		with patch.object(stripe.Mandate, "retrieve", return_value=frappe._dict(status="active")):
+			self.assertEqual(adapter.get_mandate_status("mandate_x"), "active")
+
+	def test_verify_payment_signature_is_unsupported(self):
+		adapter = self.make_adapter()
+		with self.assertRaises(GatewayUnsupported):
+			adapter.verify_payment_signature({})

@@ -26,6 +26,36 @@ class StripeAdapter(GatewayAdapter):
 		stripe.max_network_retries = 2
 		return stripe
 
+	def setup_payment_method(self, team, setup_data: dict) -> dict:
+		"""Create an off-session SetupIntent; UI confirms it with the card."""
+		self._configure()
+		intent = stripe.SetupIntent.create(
+			customer=setup_data.get("customer_id"),
+			payment_method_types=["card"],
+			usage="off_session",
+		)
+		return {"client_secret": intent.get("client_secret"), "setup_intent_id": intent.get("id")}
+
+	def validate_payment_method(self, payment_method) -> bool:
+		"""Micro-charge (50 minor units) + auto-refund to prove the card is live."""
+		self._configure()
+		try:
+			intent = stripe.PaymentIntent.create(
+				amount=50,
+				currency=(self.gateway.currency or "usd").lower(),
+				customer=payment_method.get("customer_id"),
+				payment_method=payment_method.gateway_method_id,
+				confirm=True,
+				off_session=True,
+			)
+		except stripe.error.CardError:
+			return False
+
+		if intent.get("status") == "succeeded":
+			stripe.Refund.create(payment_intent=intent.get("id"))
+			return True
+		return False
+
 	def charge(self, invoice, payment_method, idempotency_key: str) -> PaymentResult:
 		"""Off-session charge of a stored payment method. Idempotent per attempt.
 
@@ -105,3 +135,15 @@ class StripeAdapter(GatewayAdapter):
 		self._configure()
 		intent = stripe.PaymentIntent.retrieve(gateway_txn_id)
 		return intent.get("status")
+
+	def create_customer(self, team) -> str:
+		self._configure()
+		customer = stripe.Customer.create(
+			name=getattr(team, "name", None),
+			email=team.get("user") if hasattr(team, "get") else None,
+		)
+		return customer.get("id")
+
+	def get_mandate_status(self, mandate_reference: str) -> str:
+		self._configure()
+		return stripe.Mandate.retrieve(mandate_reference).get("status")

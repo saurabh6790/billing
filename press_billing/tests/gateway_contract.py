@@ -55,7 +55,35 @@ class GatewayAdapterContract:
 		"""Return (payload_dict, headers, expected_event_id, expected_event_type)."""
 		raise NotImplementedError
 
+	def setup_inputs(self):
+		"""Return (team, setup_data) for setup_payment_method."""
+		raise NotImplementedError
+
+	def stub_setup(self):
+		"""Context manager stubbing the SDK so setup returns a reference."""
+		raise NotImplementedError
+
+	def validation_inputs(self):
+		"""Return a payment_method object for validate_payment_method."""
+		raise NotImplementedError
+
+	def stub_validation_success(self):
+		raise NotImplementedError
+
 	# --- contract -----------------------------------------------------------
+
+	def test_setup_payment_method_returns_client_handles(self):
+		adapter = self.make_adapter()
+		team, setup_data = self.setup_inputs()
+		with self.stub_setup():
+			result = adapter.setup_payment_method(team, setup_data)
+		self.assertIsInstance(result, dict)
+		self.assertTrue(result)  # carries at least one client-side handle
+
+	def test_validate_payment_method_true_when_live(self):
+		adapter = self.make_adapter()
+		with self.stub_validation_success():
+			self.assertTrue(adapter.validate_payment_method(self.validation_inputs()))
 
 	def test_successful_charge_returns_captured(self):
 		adapter = self.make_adapter()
