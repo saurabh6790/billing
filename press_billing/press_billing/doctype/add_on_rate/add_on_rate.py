@@ -4,5 +4,5 @@
 from frappe.model.document import Document
 
 
-class PlanResource(Document):
+class AddonRate(Document):
 	pass

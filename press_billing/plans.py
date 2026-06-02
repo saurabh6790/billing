@@ -10,15 +10,11 @@ import frappe
 
 
 @frappe.whitelist()
-def get_plan_pricing(plan: str) -> dict:
-	"""Return the current (live) Central price for a plan.
+def get_plan_pricing(plan: str, currency: str | None = None, cluster: str | None = None) -> dict:
+	"""Return the live catalog snapshot for a bundle.
 
-	Never cached as authoritative by callers; this is the live catalog price.
+	With a currency (and optional cluster) the applicable rate is resolved
+	(most-specific region match, else global). Never cached as authoritative.
 	"""
 	doc = frappe.get_doc("Plan", plan)
-	return {
-		"plan": doc.name,
-		"title": doc.title,
-		"currency": doc.currency,
-		"display_price": doc.display_price(),
-	}
+	return doc.as_pricing(currency=currency, cluster=cluster)

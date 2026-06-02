@@ -3,20 +3,20 @@
  "allow_rename": 0,
  "autoname": "prompt",
  "creation": "2026-06-02 00:00:00.000000",
- "description": "A billable configuration with one immutable identity forever. A price change never forks a new plan.",
+ "description": "A flat-rate bundle with one immutable identity forever. The rate is the price; a rate change never forks a new plan.",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
   "title",
-  "plan_type",
   "is_active",
   "column_break_head",
   "billing_cycle",
   "annual_discount_pct",
-  "currency",
-  "section_break_resources",
-  "plan_resources"
+  "section_break_rates",
+  "rates",
+  "section_break_includes",
+  "includes"
  ],
  "fields": [
   {
@@ -24,15 +24,6 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Title",
-   "reqd": 1
-  },
-  {
-   "default": "base",
-   "fieldname": "plan_type",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "label": "Plan Type",
-   "options": "base\naddon",
    "reqd": 1
   },
   {
@@ -61,22 +52,26 @@
    "label": "Annual Discount %"
   },
   {
-   "default": "USD",
-   "fieldname": "currency",
-   "fieldtype": "Data",
-   "label": "Currency",
-   "reqd": 1
-  },
-  {
-   "fieldname": "section_break_resources",
+   "fieldname": "section_break_rates",
    "fieldtype": "Section Break",
-   "label": "Resources"
+   "label": "Rates"
   },
   {
-   "fieldname": "plan_resources",
+   "fieldname": "rates",
    "fieldtype": "Table",
-   "label": "Plan Resources",
-   "options": "Plan Resource"
+   "label": "Rates",
+   "options": "Plan Rate"
+  },
+  {
+   "fieldname": "section_break_includes",
+   "fieldtype": "Section Break",
+   "label": "Includes"
+  },
+  {
+   "fieldname": "includes",
+   "fieldtype": "Table",
+   "label": "Includes",
+   "options": "Plan Includes"
   }
  ],
  "index_web_pages_for_search": 1,

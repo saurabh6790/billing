@@ -9,26 +9,49 @@ from press_billing.tests.utils import make_plan
 
 
 class TestGetPlanPricing(IntegrationTestCase):
-	def test_returns_live_display_price_for_plan(self):
-		# 2 vCPU @ 10 + 4 GB @ 5 = 40
-		make_plan("plan-test-2vcpu")
+	def test_resolves_rate_per_currency(self):
+		make_plan("bundle-test-2vcpu")
 
-		pricing = get_plan_pricing(plan="plan-test-2vcpu")
+		usd = get_plan_pricing(plan="bundle-test-2vcpu", currency="USD")
+		inr = get_plan_pricing(plan="bundle-test-2vcpu", currency="INR")
 
-		self.assertEqual(pricing["plan"], "plan-test-2vcpu")
-		self.assertEqual(pricing["currency"], "USD")
-		self.assertEqual(pricing["display_price"], 40)
+		self.assertEqual(usd["plan"], "bundle-test-2vcpu")
+		self.assertEqual(usd["rate"], 40)
+		self.assertEqual(inr["rate"], 3200)
+
+	def test_regional_override_resolves(self):
+		make_plan(
+			"bundle-test-region",
+			rates=[
+				{"cluster": "", "currency": "INR", "rate": 3200},
+				{"cluster": "ap-south-1", "currency": "INR", "rate": 3500},
+			],
+		)
+		pricing = get_plan_pricing(plan="bundle-test-region", currency="INR", cluster="ap-south-1")
+		self.assertEqual(pricing["rate"], 3500)
+
+	def test_includes_are_composition_only_no_price(self):
+		make_plan("bundle-test-includes")
+		pricing = get_plan_pricing(plan="bundle-test-includes")
+
+		includes = pricing["includes"]
+		self.assertEqual(len(includes), 3)
+		self.assertEqual(includes[0]["resource_type"], "compute")
+		# composition rows carry quantity/unit but no price/rate
+		self.assertNotIn("rate", includes[0])
+		self.assertNotIn("price_per_unit", includes[0])
 
 
 class TestPlanIdentity(IntegrationTestCase):
-	def test_price_edit_does_not_fork_a_new_plan(self):
-		name = make_plan("plan-test-price-edit")
+	def test_rate_edit_does_not_fork_a_new_plan(self):
+		name = make_plan("bundle-test-rate-edit")
 		count_before = frappe.db.count("Plan")
 
 		plan = frappe.get_doc("Plan", name)
-		plan.plan_resources[0].price_per_unit = 99
+		for row in plan.rates:
+			if row.currency == "USD":
+				row.rate = 99
 		plan.save(ignore_permissions=True)
 
-		# Same identity, no proliferation; live price reflects the edit.
 		self.assertEqual(frappe.db.count("Plan"), count_before)
-		self.assertEqual(get_plan_pricing(plan=name)["display_price"], 99 * 2 + 5 * 4)
+		self.assertEqual(get_plan_pricing(plan=name, currency="USD")["rate"], 99)

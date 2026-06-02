@@ -4,28 +4,20 @@
 
 import frappe
 
-DEFAULT_RESOURCES = [
-	{
-		"resource_type": "compute",
-		"unit": "vCPU",
-		"quantity_included": 2,
-		"price_per_unit": 10,
-		"billing_type": "fixed",
-		"billing_interval": "monthly",
-	},
-	{
-		"resource_type": "memory",
-		"unit": "GB",
-		"quantity_included": 4,
-		"price_per_unit": 5,
-		"billing_type": "fixed",
-		"billing_interval": "monthly",
-	},
+DEFAULT_RATES = [
+	{"cluster": "", "currency": "USD", "rate": 40},
+	{"cluster": "", "currency": "INR", "rate": 3200},
+]
+
+DEFAULT_INCLUDES = [
+	{"resource_type": "compute", "quantity": 2, "unit": "vCPU"},
+	{"resource_type": "memory", "quantity": 4, "unit": "GB"},
+	{"resource_type": "disk", "quantity": 80, "unit": "GB"},
 ]
 
 
-def make_plan(name, resources=None, **kwargs):
-	"""Create (or replace) a Plan with the given resources and return its name."""
+def make_plan(name, rates=None, includes=None, **kwargs):
+	"""Create (or replace) a bundle Plan and return its name."""
 	if frappe.db.exists("Plan", name):
 		frappe.delete_doc("Plan", name, force=True)
 
@@ -34,11 +26,36 @@ def make_plan(name, resources=None, **kwargs):
 			"doctype": "Plan",
 			"__newname": name,
 			"title": kwargs.get("title", name),
-			"plan_type": kwargs.get("plan_type", "base"),
 			"billing_cycle": kwargs.get("billing_cycle", "monthly"),
-			"currency": kwargs.get("currency", "USD"),
 			"is_active": kwargs.get("is_active", 1),
-			"plan_resources": resources if resources is not None else DEFAULT_RESOURCES,
+			"rates": rates if rates is not None else DEFAULT_RATES,
+			"includes": includes if includes is not None else DEFAULT_INCLUDES,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc.name
+
+
+def make_addon(name, rates=None, **kwargs):
+	"""Create (or replace) an Add-on and return its name."""
+	if frappe.db.exists("Add-on", name):
+		frappe.delete_doc("Add-on", name, force=True)
+
+	doc = frappe.get_doc(
+		{
+			"doctype": "Add-on",
+			"__newname": name,
+			"title": kwargs.get("title", name),
+			"resource_type": kwargs.get("resource_type", "transfer"),
+			"unit": kwargs.get("unit", "GB"),
+			"billing_type": kwargs.get("billing_type", "metered"),
+			"billing_interval": kwargs.get("billing_interval", "monthly"),
+			"rates": rates
+			if rates is not None
+			else [
+				{"cluster": "", "currency": "USD", "rate": 0.01},
+				{"cluster": "", "currency": "INR", "rate": 0.8},
+			],
 		}
 	)
 	doc.insert(ignore_permissions=True)

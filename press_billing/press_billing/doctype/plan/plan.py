@@ -3,43 +3,40 @@
 
 from frappe.model.document import Document
 
+from press_billing.pricing import resolve_rate
+
 
 class Plan(Document):
-	def display_price(self) -> float:
-		"""Sum of fixed resources (price_per_unit * quantity_included).
+	def get_rate(self, currency: str, cluster: str | None = None):
+		"""Resolved flat rate for (currency, cluster). The rate IS the price."""
+		return resolve_rate(self.rates, currency, cluster)
 
-		The headline 'display' price. Display-only: the Agent computes nothing
-		with it and billing never reads it (billing reads the price-lock).
+	def as_pricing(self, currency: str | None = None, cluster: str | None = None) -> dict:
+		"""Catalog snapshot: identity + composition + rates.
+
+		With a currency, also resolves the single applicable rate. Consumed by
+		get_plan_pricing and by the push to an Agent's Plan Cache.
 		"""
-		return sum(
-			(r.price_per_unit or 0) * (r.quantity_included or 0)
-			for r in self.plan_resources
-			if r.billing_type == "fixed"
-		)
-
-	def as_pricing(self) -> dict:
-		"""Live pricing snapshot: identity + composition + display price.
-
-		Consumed by get_plan_pricing and by the push to an Agent's Plan Cache.
-		"""
-		return {
+		data = {
 			"plan": self.name,
 			"title": self.title,
-			"plan_type": self.plan_type,
 			"billing_cycle": self.billing_cycle,
-			"currency": self.currency,
 			"is_active": self.is_active,
-			"display_price": self.display_price(),
-			"resources": [
+			"rates": [
+				{"cluster": r.cluster or None, "currency": r.currency, "rate": r.rate}
+				for r in self.rates
+			],
+			"includes": [
 				{
-					"resource_type": r.resource_type,
-					"unit": r.unit,
-					"quantity_included": r.quantity_included,
-					"price_per_unit": r.price_per_unit,
-					"metered_rate": r.metered_rate,
-					"billing_interval": r.billing_interval,
-					"billing_type": r.billing_type,
+					"resource_type": i.resource_type,
+					"quantity": i.quantity,
+					"unit": i.unit,
 				}
-				for r in self.plan_resources
+				for i in self.includes
 			],
 		}
+		if currency:
+			data["currency"] = currency
+			data["cluster"] = cluster
+			data["rate"] = self.get_rate(currency, cluster)
+		return data
