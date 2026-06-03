@@ -9,12 +9,14 @@ from press_billing.gateways.base import GatewayAdapter
 
 def get_adapter(gateway) -> GatewayAdapter:
 	"""Return the adapter instance for a Payment Gateway doc, keyed by adapter_key."""
+	from press_billing.gateways.paypal_adapter import PayPalAdapter
 	from press_billing.gateways.razorpay_adapter import RazorpayAdapter
 	from press_billing.gateways.stripe_adapter import StripeAdapter
 
 	adapters = {
 		"stripe": StripeAdapter,
 		"razorpay": RazorpayAdapter,
+		"paypal": PayPalAdapter,
 	}
 
 	adapter_class = adapters.get(gateway.adapter_key)
