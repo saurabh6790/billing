@@ -85,6 +85,12 @@ def recompute_trust_tier(team: str, paid_invoice_count: int, cumulative_paid):
 		)
 
 	tier.save(ignore_permissions=True)
+
+	# Mandate ceilings are tied to the cap; a raised cap needs customer re-consent
+	# (the team is held at the old ceiling until re-authorisation). #08
+	from press_billing import mandates
+
+	mandates.reconcile_mandates_to_cap(team)
 	return tier
 
 
