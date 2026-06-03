@@ -146,13 +146,6 @@ class TestCustomerActions(CustomerDataBase):
 		with self.assertRaises(frappe.ValidationError):
 			dashboard.save_billing_profile(TEAM, legal_name="Acme", gstin="NOT-A-GSTIN")
 
-	def test_subscribe_requires_billing_profile(self):
-		with self.assertRaises(frappe.ValidationError):
-			dashboard.create_subscription(team=TEAM, plan=PLAN, cluster=CLUSTER)
-		dashboard.save_billing_profile(TEAM, legal_name="Acme")
-		out = dashboard.create_subscription(team=TEAM, plan=PLAN, cluster=CLUSTER)
-		self.assertTrue(out["subscription"])
-		self.assertEqual(out["account_standing"], "current")
 
 	def test_purchase_credits(self):
 		out = dashboard.purchase_credits(team=TEAM, amount=1500)
@@ -161,10 +154,6 @@ class TestCustomerActions(CustomerDataBase):
 		with self.assertRaises(frappe.ValidationError):
 			dashboard.purchase_credits(team=TEAM, amount=0)
 
-	def test_list_plans_has_rate(self):
-		plans = {p["name"]: p for p in dashboard.list_plans("INR")}
-		self.assertIn(PLAN, plans)
-		self.assertGreater(plans[PLAN]["rate"], 0)
 
 	def test_billing_settings_roundtrip(self):
 		dashboard.save_billing_settings(team=TEAM, billing_mode="prepaid", min_balance=5000)
@@ -173,7 +162,7 @@ class TestCustomerActions(CustomerDataBase):
 		self.assertEqual(s["min_balance"], 5000)
 
 	def test_admin_without_team_falls_back(self):
-		dashboard.save_billing_profile(TEAM, legal_name="Acme")
-		dashboard.create_subscription(team=TEAM, plan=PLAN, cluster=CLUSTER)
+		from press_billing import subscriptions
+		subscriptions.create_subscription(team=TEAM, cluster=CLUSTER, plan=PLAN, billing_cycle="monthly")
 		invoices = dashboard.list_invoices()  # no team arg, as admin
 		self.assertIsInstance(invoices, list)

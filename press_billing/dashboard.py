@@ -174,23 +174,6 @@ def ensure_billing_team_field():
 
 
 @frappe.whitelist()
-def list_plans(currency: str = "INR", cluster: str | None = None) -> list[dict]:
-	"""Active catalog for the subscribe form, with the resolved rate."""
-	from press_billing.pricing import resolve_rate
-
-	rows = []
-	for name in frappe.get_all("Plan", filters={"is_active": 1}, pluck="name"):
-		plan = frappe.get_doc("Plan", name)
-		rows.append({
-			"name": plan.name, "title": plan.title, "billing_cycle": plan.billing_cycle,
-			"currency": currency, "rate": frappe.utils.flt(resolve_rate(plan.rates, currency, cluster)),
-			"includes": [{"resource_type": i.resource_type, "quantity": i.quantity, "unit": i.unit}
-						 for i in plan.includes],
-		})
-	return rows
-
-
-@frappe.whitelist()
 def get_billing_profile(team: str | None = None) -> dict:
 	team = _resolve_team(team)
 	if not frappe.db.exists("Billing Profile", team):
@@ -212,24 +195,6 @@ def save_billing_profile(team: str | None = None, **fields) -> dict:
 		doc = frappe.get_doc({"doctype": "Billing Profile", "team": team, **values})
 	doc.save(ignore_permissions=True)
 	return {"saved": True, "team": team, "gstin": doc.gstin}
-
-
-@frappe.whitelist()
-def create_subscription(team=None, plan=None, cluster=None, billing_cycle="monthly",
-						payment_method=None, gateway=None) -> dict:
-	"""Record a subscription INTENT (provisioning happens at the cluster).
-
-	A billing profile is required first — invoicing needs the legal identity.
-	"""
-	team = _resolve_team(team)
-	if not frappe.db.exists("Billing Profile", team):
-		frappe.throw("Add your billing details before subscribing.", frappe.ValidationError)
-	from press_billing import subscriptions
-
-	doc = subscriptions.create_subscription(
-		team=team, cluster=cluster, plan=plan, billing_cycle=billing_cycle,
-		default_payment_method=payment_method, gateway=gateway)
-	return {"subscription": doc.name, "plan": plan, "account_standing": doc.account_standing}
 
 
 @frappe.whitelist()
