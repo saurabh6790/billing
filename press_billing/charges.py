@@ -161,6 +161,11 @@ def _settle_invoice(attempt) -> bool:
 	inv.status = "Paid"
 	inv.save(ignore_permissions=True)
 	_notify(inv, f"Invoice {inv.name} paid ({inv.amount_paid} {inv.currency or ''}).")
+
+	# Async, one-way, non-blocking push to the statutory SOR (#17).
+	from press_billing.erpnext_sync import enqueue_invoice_sync
+
+	enqueue_invoice_sync(inv.name)
 	return True
 
 

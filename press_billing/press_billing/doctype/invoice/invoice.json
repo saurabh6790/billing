@@ -36,6 +36,10 @@
   "amount_paid",
   "section_break_ext",
   "erpnext_invoice",
+  "erpnext_sync_status",
+  "erpnext_sync_attempts",
+  "erpnext_next_retry_at",
+  "erpnext_sync_error",
   "pdf_url"
  ],
  "fields": [
@@ -200,12 +204,42 @@
   },
   {
    "fieldname": "section_break_ext",
-   "fieldtype": "Section Break"
+   "fieldtype": "Section Break",
+   "label": "ERPNext Sync (one-way, async)"
   },
   {
    "fieldname": "erpnext_invoice",
    "fieldtype": "Data",
-   "label": "ERPNext Invoice"
+   "label": "ERPNext Invoice",
+   "read_only": 1,
+   "description": "Sales Invoice name in ERPNext (statutory SOR); set on successful sync"
+  },
+  {
+   "default": "pending",
+   "fieldname": "erpnext_sync_status",
+   "fieldtype": "Select",
+   "label": "ERPNext Sync Status",
+   "options": "pending\nsynced\nfailed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "erpnext_sync_attempts",
+   "fieldtype": "Int",
+   "label": "ERPNext Sync Attempts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "erpnext_next_retry_at",
+   "fieldtype": "Datetime",
+   "label": "ERPNext Next Retry At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "erpnext_sync_error",
+   "fieldtype": "Small Text",
+   "label": "ERPNext Sync Error",
+   "read_only": 1
   },
   {
    "fieldname": "pdf_url",

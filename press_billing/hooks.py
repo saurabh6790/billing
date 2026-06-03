@@ -144,9 +144,13 @@ app_license = "mit"
 # ---------------
 
 scheduler_events = {
-	# Retry/dunning + staged suspension for unpaid invoices.
+	# Retry/dunning + staged suspension for unpaid invoices, and ERPNext sync
+	# retries whose backoff window has elapsed.
 	"daily": [
 		"press_billing.dunning.run_dunning",
+	],
+	"hourly": [
+		"press_billing.erpnext_sync.retry_failed_syncs",
 	],
 	# Cards expire at the end of their printed month; flip lapsed ones monthly.
 	"monthly": [
