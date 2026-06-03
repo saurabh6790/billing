@@ -111,7 +111,12 @@ def generate_draft_invoice(subscription: str, period_start, period_end):
 
 	existing = frappe.db.get_value(
 		"Invoice",
-		{"subscription": subscription, "period_start": period_start, "period_end": period_end},
+		{
+			"subscription": subscription,
+			"period_start": period_start,
+			"period_end": period_end,
+			"status": ["!=", "Cancelled"],
+		},
 		"name",
 	)
 	if existing:
@@ -273,3 +278,35 @@ def open_drafts(period_end, enqueue: bool = False) -> list[str]:
 		else:
 			open_and_collect(inv)
 	return drafts
+
+
+# --- pre-payment corrections (cancel + reissue) -----------------------------
+
+
+def cancel_invoice(invoice: str, reason: str | None = None) -> str:
+	"""Cancel a pre-payment (Draft/Open/Overdue) invoice.
+
+	Issued line items are never mutated — a correction cancels the whole invoice
+	and reissues a fresh one. A Paid invoice cannot be cancelled (use a refund).
+	"""
+	doc = frappe.get_doc("Invoice", invoice)
+	if doc.status == "Paid":
+		frappe.throw("A paid invoice cannot be cancelled — issue a refund instead.", frappe.ValidationError)
+	if doc.status == "Cancelled":
+		return invoice
+	doc.status = "Cancelled"
+	doc.save(ignore_permissions=True)
+	if reason:
+		doc.add_comment("Info", f"Cancelled: {reason}")
+	return invoice
+
+
+def reissue_invoice(invoice: str, reason: str | None = None) -> str | None:
+	"""Cancel an invoice and regenerate it from current data for the same period.
+
+	The cancelled invoice is excluded from the draft idempotency check, so a new
+	Draft is produced. Returns the new invoice name (or None if nothing to bill).
+	"""
+	doc = frappe.get_doc("Invoice", invoice)
+	cancel_invoice(invoice, reason=reason)
+	return generate_draft_invoice(doc.subscription, doc.period_start, doc.period_end)
