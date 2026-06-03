@@ -99,6 +99,7 @@ def issue_token(
 	cluster_slices: dict,
 	lifetime_hours: int = 24,
 	suspend: bool = False,
+	terminate: bool = False,
 ):
 	"""Issue a signed, short-lived entitlement token for a team.
 
@@ -124,6 +125,7 @@ def issue_token(
 		"allowed_plans": tier.allowed_plans or [],
 		"allowed_resource_types": tier.allowed_resource_types or [],
 		"suspend": 1 if suspend else 0,
+		"terminate": 1 if terminate else 0,
 		"issued_at": issued_at.isoformat(),
 		"expires_at": expires_at.isoformat(),
 	}
@@ -137,6 +139,7 @@ def issue_token(
 			"allowed_plans": frappe.as_json(payload["allowed_plans"]),
 			"allowed_resource_types": frappe.as_json(payload["allowed_resource_types"]),
 			"suspend": payload["suspend"],
+			"terminate": payload["terminate"],
 			"issued_at": issued_at,
 			"expires_at": expires_at,
 			"signature": signature,

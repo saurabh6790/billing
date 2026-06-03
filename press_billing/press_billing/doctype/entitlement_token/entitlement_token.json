@@ -10,6 +10,7 @@
  "field_order": [
   "team",
   "suspend",
+  "terminate",
   "column_break_meta",
   "issued_at",
   "expires_at",
@@ -34,7 +35,15 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Suspend",
-   "description": "cap-0 + suspend directive (enforcement channel)"
+   "description": "cap-0 + suspend directive (enforcement channel) — Agent stops the resource"
+  },
+  {
+   "default": "0",
+   "fieldname": "terminate",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Terminate",
+   "description": "Escalated directive after the suspend window — Agent terminates the resource"
   },
   {
    "fieldname": "column_break_meta",

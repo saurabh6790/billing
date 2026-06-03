@@ -9,6 +9,11 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
+    # Gateway SDKs. Pinned to versions that import on Python 3.14 (the old
+    # stripe 2.56 vendored `six` and breaks); the adapters use Stripe's global
+    # API, which v15 still exposes.
+    "stripe>=15,<16",
+    "razorpay>=1.4",
 ]
 
 [build-system]

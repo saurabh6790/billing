@@ -144,6 +144,10 @@ app_license = "mit"
 # ---------------
 
 scheduler_events = {
+	# Retry/dunning + staged suspension for unpaid invoices.
+	"daily": [
+		"press_billing.dunning.run_dunning",
+	],
 	# Cards expire at the end of their printed month; flip lapsed ones monthly.
 	"monthly": [
 		"press_billing.payments.expire_payment_methods",
