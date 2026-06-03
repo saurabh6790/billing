@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-5">
     <div class="flex items-center justify-between">
-      <div><p class="text-sm text-ink-gray-6">Credit balance</p><p class="text-2xl font-semibold text-ink-gray-9">{{ money(balance.data?.balance) }}</p></div>
+      <div><p class="text-sm text-ink-gray-6">Credit balance</p><p class="text-2xl font-semibold text-ink-gray-9">{{ money(balance.data?.balance, cur) }}</p></div>
       <Button variant="solid" theme="gray" label="+ Add credit" @click="topup = true" />
     </div>
     <table class="w-full text-sm">
@@ -13,8 +13,8 @@
         <tr v-for="(e,i) in ledger.data || []" :key="i" class="border-b border-outline-gray-1">
           <td class="py-3 pr-4 text-ink-gray-7">{{ (e.created_at||'').slice(0,10) }}</td>
           <td class="py-3 pr-4 text-ink-gray-8">{{ e.note || (e.reference_name ? `Applied to ${e.reference_name}` : e.entry_type) }}</td>
-          <td class="py-3 pr-4 text-right" :class="e.entry_type==='credit' ? 'text-ink-green-3' : 'text-ink-gray-8'">{{ e.entry_type==='credit'?'+':'−' }}{{ money(e.amount) }}</td>
-          <td class="py-3 text-right text-ink-gray-8">{{ money(e.running_balance) }}</td>
+          <td class="py-3 pr-4 text-right" :class="e.entry_type==='credit' ? 'text-ink-green-3' : 'text-ink-gray-8'">{{ e.entry_type==='credit'?'+':'−' }}{{ money(e.amount, e.currency || cur) }}</td>
+          <td class="py-3 text-right text-ink-gray-8">{{ money(e.running_balance, e.currency || cur) }}</td>
         </tr>
         <tr v-if="!(ledger.data || []).length"><td colspan="4" class="py-6 text-ink-gray-5">No credit activity.</td></tr>
       </tbody>
@@ -23,7 +23,7 @@
   </div>
 </template>
 <script setup>
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { Button, createResource } from 'frappe-ui';
 import { store } from '../store';
 import TopUpDialog from '../components/TopUpDialog.vue';
@@ -31,6 +31,7 @@ import { money } from '../utils';
 const topup = ref(false);
 const mk = (url) => createResource({ url, makeParams: () => ({ team: store.team }) });
 const balance = mk('press_billing.dashboard.get_credit_balance');
+const cur = computed(() => balance.data?.currency || 'INR');
 const ledger = mk('press_billing.dashboard.credit_ledger');
 const profile = mk('press_billing.dashboard.get_billing_profile');
 watch(() => store.team, (t) => { if (t) [balance,ledger,profile].forEach((r) => r.reload()); }, { immediate: true });

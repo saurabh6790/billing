@@ -11,9 +11,9 @@
           <td class="py-3 pr-4 font-medium text-ink-gray-8">{{ row.name }}</td>
           <td class="py-3 pr-4"><Badge variant="subtle" :theme="statusTheme(row.status)" :label="row.status" /></td>
           <td class="py-3 pr-4 text-ink-gray-7">{{ row.period_start }} – {{ row.period_end }}</td>
-          <td class="py-3 pr-4 text-right text-ink-gray-8">{{ money(row.total) }}</td>
-          <td class="py-3 pr-4 text-right text-ink-gray-8">{{ money(row.amount_paid) }}</td>
-          <td class="py-3 pr-4 text-right text-ink-gray-8">{{ money(row.total - row.amount_paid) }}</td>
+          <td class="py-3 pr-4 text-right text-ink-gray-8">{{ money(row.total, row.currency) }}</td>
+          <td class="py-3 pr-4 text-right text-ink-gray-8">{{ money(row.amount_paid, row.currency) }}</td>
+          <td class="py-3 pr-4 text-right text-ink-gray-8">{{ money(row.total - row.amount_paid, row.currency) }}</td>
           <td class="py-3 text-right"><Button v-if="row.status !== 'Draft'" label="View" @click.stop="open(row.name)" /></td>
         </tr>
         <tr v-if="!(invoices.data || []).length"><td colspan="7" class="py-6 text-ink-gray-5">No invoices yet.</td></tr>

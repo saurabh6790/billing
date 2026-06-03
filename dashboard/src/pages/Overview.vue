@@ -5,37 +5,25 @@
       <span class="text-ink-gray-6">Trust tier: <span class="font-medium text-ink-gray-9">{{ ov.data?.tier || '—' }}</span></span>
       <span class="text-ink-gray-6">Cap: <span class="font-medium text-ink-gray-9">{{ money(ov.data?.max_spend) }}/mo</span></span>
       <span class="text-ink-gray-6">Standing: <Badge variant="subtle" :theme="standingTheme(ov.data?.standing)" :label="titleCase(ov.data?.standing)" /></span>
-      <span class="text-ink-gray-6">Resources: <span class="font-medium text-ink-gray-9">{{ ov.data?.resources ?? 0 }}</span></span>
+      <span class="text-ink-gray-6">Instances: <span class="font-medium text-ink-gray-9">{{ ov.data?.resources ?? 0 }}</span> across <span class="font-medium text-ink-gray-9">{{ ov.data?.clusters ?? 0 }}</span> region(s)</span>
+      <span class="text-ink-gray-6">Billing currency: <span class="font-medium text-ink-gray-9">{{ ov.data?.currency || 'INR' }}</span></span>
     </div>
 
     <!-- credit shortfall alert (prepaid) -->
     <div v-if="forecast.data?.credit_alert" class="rounded-md border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-red-4">
-      Your projected bill ({{ money(forecast.data.projected_total) }}) exceeds your wallet balance ({{ money(forecast.data.credit_balance) }}). Top up {{ money(forecast.data.shortfall) }} to avoid interruption.
+      Your projected bill ({{ money(forecast.data.projected_total, fcur) }}) exceeds your wallet balance ({{ money(forecast.data.credit_balance, fcur) }}). Top up {{ money(forecast.data.shortfall, fcur) }} to avoid interruption.
     </div>
 
-    <!-- this month + services -->
-    <div class="rounded-lg border border-outline-gray-2 px-5 py-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <p class="text-lg font-semibold text-ink-gray-9">This Month</p>
-          <p class="mt-1 text-sm text-ink-gray-6">Period ends {{ forecast.data?.period_end || '—' }} · {{ forecast.data?.days_remaining ?? '—' }} days left</p>
-        </div>
-        <p class="text-2xl font-semibold text-ink-gray-9">{{ money(forecast.data?.projected_total) }}</p>
+    <!-- this-month projection summary → Forecast tab -->
+    <div class="flex items-center justify-between rounded-lg border border-outline-gray-2 px-5 py-4">
+      <div>
+        <p class="text-lg font-semibold text-ink-gray-9">This Month</p>
+        <p class="mt-1 text-sm text-ink-gray-6">Projected to {{ forecast.data?.period_end || '—' }} · {{ forecast.data?.days_remaining ?? '—' }} days left</p>
       </div>
-      <table v-if="forecast.data?.line_items?.length" class="mt-4 w-full text-sm">
-        <thead><tr class="border-b border-outline-gray-1 text-left text-ink-gray-5">
-          <th class="py-1.5 pr-4 font-normal">Service</th><th class="py-1.5 pr-4 font-normal">Plan</th>
-          <th class="py-1.5 pr-4 text-right font-normal">Usage</th><th class="py-1.5 text-right font-normal">Amount</th>
-        </tr></thead>
-        <tbody>
-          <tr v-for="(li,i) in forecast.data.line_items" :key="i" class="border-b border-outline-gray-1 last:border-0">
-            <td class="py-1.5 pr-4 text-ink-gray-8 capitalize">{{ li.resource_type }}</td>
-            <td class="py-1.5 pr-4 text-ink-gray-7">{{ li.plan || '—' }}</td>
-            <td class="py-1.5 pr-4 text-right text-ink-gray-7">{{ li.days ? li.days + ' day(s)' : li.quantity }}</td>
-            <td class="py-1.5 text-right text-ink-gray-8">{{ money(li.amount) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="flex items-center gap-4">
+        <p class="text-2xl font-semibold text-ink-gray-9">{{ money(forecast.data?.projected_total, fcur) }}</p>
+        <Button label="View forecast" @click="$router.push('/billing/forecast')" />
+      </div>
     </div>
 
     <!-- payment details -->
@@ -53,7 +41,7 @@
         </DetailRow>
 
         <DetailRow v-if="mode === 'prepaid'" label="Credit balance">
-          <template #desc>{{ money(balance.data?.balance) }}</template>
+          <template #desc>{{ money(balance.data?.balance, balance.data?.currency) }}</template>
           <template #action><Button label="+ Add credit" @click="topup = true" /></template>
         </DetailRow>
 
@@ -71,6 +59,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { Button, FormControl, Badge, createResource } from 'frappe-ui';
+// forecast currency (a team bills in one currency)
 import { store } from '../store';
 import DetailRow from '../components/DetailRow.vue';
 import TopUpDialog from '../components/TopUpDialog.vue';
@@ -85,6 +74,7 @@ const profile = mk('press_billing.dashboard.get_billing_profile');
 const settings = mk('press_billing.dashboard.get_billing_settings');
 const saveSettings = createResource({ url: 'press_billing.dashboard.save_billing_settings' });
 const mode = ref('postpaid');
+const fcur = computed(() => forecast.data?.currency || 'INR');
 const topup = ref(false); const editAddr = ref(false);
 watch(() => store.team, (t) => { if (t) [ov,forecast,balance,methods,profile,settings].forEach((r) => r.reload()); }, { immediate: true });
 watch(() => settings.data, (d) => { if (d) mode.value = d.billing_mode || 'postpaid'; });

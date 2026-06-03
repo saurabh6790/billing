@@ -1,281 +1,381 @@
 # Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
-"""Demo scenarios — one team per state, so every flow can be shown (#demo).
+"""Comprehensive demo dataset for the billing portal (#demo).
 
     bench --site billing.local execute press_billing.demo_scenarios.seed_all
 
-Builds the happy-path `demo` team (press_billing.demo.seed) plus a team for each
-scenario: overdue/dunning, suspended, trial cost_report, credits-only,
-refund, SEZ zero-rating, TDS withholding, reconciliation, and a Razorpay UPI
-mandate. Authentic records throughout — flows that need a live gateway have their
-end-state constructed directly (no test credentials required).
+Wipes ALL press_billing data, then builds a realistic multi-region catalog and
+ten teams so every dashboard criterion can be demonstrated:
+
+* 3 clusters — India (Mumbai), Europe (Frankfurt), Middle East (Dubai).
+* 5 plan sizes (1→16 vCPU), each priced per cluster x currency (INR/EUR/USD),
+  so a team paying in one currency can subscribe to any region.
+* 4 trust tiers (t0 trial → t3 enterprise). Higher-tier teams carry ~10 months
+  of paid invoices; lower tiers a month or two.
+* Mixed currencies, including INR-paying teams running in EU / Middle East.
+* A grandfathering example: a long-standing team billed at its locked launch
+  rate while the catalog price has since risen (price-lock discrepancy).
+* Per-team states: active, overdue/dunning, suspended, prepaid credits, refund,
+  and a free-trial cost report.
+
+The Agent-side mirror lives in press_billing_agent.demo.seed.
 """
 
 import frappe
 
-from press_billing import billing, credits, demo, notifications, subscriptions
-from press_billing.sync import receive_usage_events
+from press_billing import billing, credits, notifications, subscriptions
+from press_billing.sync import receive_meter_rollups, receive_usage_events
 
-CLUSTER = demo.CLUSTER
-PLAN = demo.PLAN
-STRIPE_GW = demo.GATEWAY
-RAZORPAY_GW = "GW-Demo-Razorpay"
-PAYPAL_GW = "GW-Demo-PayPal"
+# --- catalog shape ----------------------------------------------------------
+
+# (slug, label, billing currency of the region)
+CLUSTERS = [
+	("in-mumbai", "India — Mumbai", "INR"),
+	("eu-frankfurt", "Europe — Frankfurt", "EUR"),
+	("me-dubai", "Middle East — Dubai", "USD"),
+]
+CURRENCIES = ["INR", "EUR", "USD"]
+# 1 unit of currency = N INR (rough FX, demo only).
+FX = {"INR": 1.0, "EUR": 90.0, "USD": 83.0}
+# Regional cost multiplier on the INR base price.
+CLUSTER_MULT = {"in-mumbai": 1.0, "eu-frankfurt": 1.25, "me-dubai": 1.15}
+
+# (slug, title, vcpu, ram_gb, disk_gb, transfer_gb_included, base_inr_monthly)
+PLAN_SIZES = [
+	("plan-1vcpu", "Starter · 1 vCPU / 2 GB", 1, 2, 25, 100, 1500),
+	("plan-2vcpu", "Basic · 2 vCPU / 4 GB", 2, 4, 50, 200, 3000),
+	("plan-4vcpu", "Standard · 4 vCPU / 8 GB", 4, 8, 100, 400, 6000),
+	("plan-8vcpu", "Pro · 8 vCPU / 16 GB", 8, 16, 200, 800, 12000),
+	("plan-16vcpu", "Enterprise · 16 vCPU / 32 GB", 16, 32, 400, 1600, 24000),
+]
+
+# Metered bandwidth overage, priced per GB per currency (cluster-agnostic).
+ADDON = "addon-transfer"
+ADDON_RATE = {"INR": 0.80, "EUR": 0.009, "USD": 0.010}
+
+# (level, sequence, is_default, max_spend_inr, max_resources, min_invoices, min_paid_inr)
+TIERS = [
+	("t0", 0, 1, 5000, 3, 0, 0),
+	("t1", 1, 0, 50000, 25, 1, 3000),
+	("t2", 2, 0, 200000, 100, 6, 50000),
+	("t3", 3, 0, 1000000, 500, 10, 500000),
+]
+
+# Output tax follows the customer's billing currency (place of supply).
+TAX_BY_CURRENCY = {"INR": ("GST", 18), "EUR": ("VAT", 19), "USD": ("VAT", 5)}
+
+# (team, tier, currency, paid_months, state, resources)
+#   paid_months = closed Paid invoices per cluster before the current (June) month.
+#   resources   = the team's running instances [(cluster, plan), ...] — droplet-
+#                 style: any plan in any region, capped by the tier. A team bills
+#                 in ONE currency regardless of where its instances run.
+TEAMS = [
+	("acme-corp", "t3", "INR", 9, "grandfathered", [
+		("in-mumbai", "plan-8vcpu"), ("in-mumbai", "plan-2vcpu"),
+		("eu-frankfurt", "plan-4vcpu"), ("me-dubai", "plan-1vcpu")]),
+	("globex", "t3", "EUR", 9, "active", [
+		("eu-frankfurt", "plan-16vcpu"), ("eu-frankfurt", "plan-4vcpu"),
+		("in-mumbai", "plan-2vcpu")]),
+	("initech", "t2", "USD", 5, "active", [
+		("me-dubai", "plan-4vcpu"), ("me-dubai", "plan-1vcpu"), ("eu-frankfurt", "plan-2vcpu")]),
+	("umbrella", "t2", "INR", 5, "active", [            # INR billing, EU + India
+		("eu-frankfurt", "plan-4vcpu"), ("in-mumbai", "plan-2vcpu")]),
+	("wayne-ent", "t2", "INR", 5, "active", [           # INR billing, ME + India
+		("me-dubai", "plan-2vcpu"), ("in-mumbai", "plan-1vcpu")]),
+	("stark-ind", "t1", "INR", 1, "overdue", [("in-mumbai", "plan-2vcpu")]),
+	("cyberdyne", "t1", "EUR", 1, "suspended", [("eu-frankfurt", "plan-2vcpu")]),
+	("hooli", "t1", "INR", 1, "credits", [("in-mumbai", "plan-1vcpu")]),
+	("soylent", "t1", "USD", 1, "refund", [("me-dubai", "plan-2vcpu")]),
+	("piedpiper", "t0", "INR", 0, "trial", [("in-mumbai", "plan-1vcpu")]),
+]
+
+STRIPE = {"INR": "GW-Stripe-INR", "EUR": "GW-Stripe-EUR", "USD": "GW-Stripe-USD"}
+RAZORPAY = "GW-Razorpay"
+ANCHOR = "2026-06-01"  # the current (open) billing month
 
 
 def seed_all() -> dict:
 	from press_billing.dashboard import ensure_billing_team_field
 
-	clean_test_teams()  # drop test-leftover team-* data so only demo teams show
-	demo.seed()  # happy-path `demo` team + catalog + gateways + tier levels + workspace
-	_extra_gateways()
-	_ensure_signing_key()
+	_wipe_all()
 	ensure_billing_team_field()
-	_profile("demo", gstin="27AAPFU0939F1ZV")
-	# So an admin browsing the portal lands on the `demo` team by default.
-	frappe.db.set_value("User", "Administrator", "billing_team", "demo")
+	_tiers()
+	_catalog()
+	_gateways()
+	_ensure_signing_key()
 
-	results = {"demo": "happy path (Paid May + Open June, wallet, card)"}
-	results["demo-overdue"] = scenario_overdue()
-	results["demo-suspended"] = scenario_suspended()
-	results["demo-trial"] = scenario_trial()
-	results["demo-credits"] = scenario_credits_only()
-	results["demo-refund"] = scenario_refund()
-	results["demo-sez"] = scenario_sez()
-	results["demo-tds"] = scenario_tds()
-	results["demo-recon"] = scenario_reconciliation()
-	results["demo-razorpay"] = scenario_razorpay_mandate()
+	results = {}
+	for team, tier, currency, months, state, resources in TEAMS:
+		results[team] = _build_team(team, tier, currency, months, state, resources)
+
+	from press_billing.demo import _ensure_workspace
+
+	_ensure_workspace()
+	# So an admin browsing the portal lands on a rich team by default.
+	frappe.db.set_value("User", "Administrator", "billing_team", "acme-corp")
 	frappe.db.commit()
 	return results
 
 
-# --- scenarios --------------------------------------------------------------
+# --- per-team build ---------------------------------------------------------
 
 
-def scenario_overdue() -> str:
-	"""A billable team in dunning: Overdue invoice, standing past_due, 3 failed
-	retries, still running (grace)."""
-	team = "demo-overdue"
-	_base(team, tier="t1", gst=True)
-	card = _card(team, STRIPE_GW)
-	sub = _subscription(team, card, STRIPE_GW)
-	_provision(team, "srv-od-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	frappe.db.set_value("Invoice", inv, {"status": "Overdue", "due_date": "2026-06-01", "amount_paid": 0})
-	subscriptions.set_standing(sub, "past_due", changed_by="dunning")
-	for n in range(3):
-		_failed_attempt(team, inv, card, STRIPE_GW, retry=n)
-		notifications.notify(team, "payment_retry",
-			message=f"Payment retry {n + 1} for invoice {inv} failed: card_declined",
+def _build_team(team, tier, currency, months, state, resources):
+	from collections import OrderedDict
+
+	_tier(team, tier)
+	_tax(team, currency)
+	_profile(team, currency, resources[0][0], prepaid=(state == "credits"))
+	gateway, pm = _payment_setup(team, currency, state)
+
+	periods = _month_periods(months)
+	first_start = periods[0][0] if periods else ANCHOR
+
+	by_cluster = OrderedDict()
+	for cluster, plan in resources:
+		by_cluster.setdefault(cluster, []).append(plan)
+
+	# Provision every instance — one price-lock each. The first instance carries
+	# the grandfathered (locked launch) rate; the rest lock today's catalog rate.
+	idx = 0
+	for cluster, plans in by_cluster.items():
+		for plan in plans:
+			idx += 1
+			resource = f"srv-{team}-{idx}"
+			catalog = frappe.get_doc("Plan", plan).get_rate(currency, cluster)
+			rate = round(catalog * 0.78, 2) if (state == "grandfathered" and idx == 1) else catalog
+			receive_usage_events([{
+				"event_id": f"ev-{team}-{idx}", "team": team, "resource_id": resource,
+				"cluster": cluster, "plan": plan, "shown_rate": rate, "currency": currency,
+				"event_type": "subscribed", "effective_from": f"{first_start} 00:00:00", "effective_to": None,
+			}])
+			# A metered bandwidth overage on the first active instance.
+			if idx == 1 and state in ("grandfathered", "active", "credits"):
+				allowance = next(p[5] for p in PLAN_SIZES if p[0] == plan)
+				receive_meter_rollups([{
+					"resource_id": resource, "resource_type": "transfer", "meter_type": "counter",
+					"period_start": f"{ANCHOR} 00:00:00", "period_end": "2026-06-30 23:59:59",
+					"quantity": round(allowance * 1.25), "unit": "GB",
+					"idempotency_key": f"{resource}:counter:{ANCHOR}", "status": "closed",
+				}])
+
+	# One subscription + invoice stream per cluster (an invoice groups a cluster's
+	# instances into day-weighted line items). The terminal state lands on the
+	# primary cluster; other clusters simply carry an Open current invoice.
+	notes = []
+	for primary, (cluster, plans) in enumerate(by_cluster.items()):
+		sub = subscriptions.create_subscription(
+			team=team, cluster=cluster, plan=plans[0], billing_cycle="monthly",
+			default_payment_method=pm, gateway=gateway,
+		).name
+		for start, end in periods:
+			inv = billing.generate_draft_invoice(sub, start, end)
+			if inv:
+				total = frappe.db.get_value("Invoice", inv, "expected_collection")
+				frappe.db.set_value("Invoice", inv, {
+					"status": "Paid", "amount_paid": total, "due_date": frappe.utils.add_days(end, 7),
+				})
+		notes.append(_finish_current_month(team, sub, currency, state if primary == 0 else "active", pm, gateway))
+
+	return f"{len(resources)} instances across {len(by_cluster)} region(s) — " + "; ".join(n for n in notes if n)
+
+
+def _finish_current_month(team, sub, currency, state, pm, gateway):
+	"""Build the open/June invoice in the team's terminal state."""
+	if state == "trial":
+		inv = billing.generate_draft_invoice(sub, ANCHOR, "2026-06-30")
+		if inv:
+			billing.open_and_collect(inv)  # cost_report → opened, never charged
+		return "trial cost report"
+
+	inv = billing.generate_draft_invoice(sub, ANCHOR, "2026-06-30")
+	if not inv:
+		return state
+
+	if state == "overdue":
+		frappe.db.set_value("Invoice", inv, {"status": "Overdue", "due_date": "2026-06-01", "amount_paid": 0})
+		subscriptions.set_standing(sub, "past_due", changed_by="dunning")
+		for n in range(3):
+			_failed_attempt(team, inv, pm, gateway, n)
+			notifications.notify(team, "payment_retry",
+				message=f"Payment retry {n + 1} for {inv} failed: card_declined",
+				reference_doctype="Invoice", reference_name=inv)
+		notifications.notify(team, "invoice_overdue", context={"invoice": inv},
 			reference_doctype="Invoice", reference_name=inv)
-	notifications.notify(team, "invoice_overdue", context={"invoice": inv},
-		reference_doctype="Invoice", reference_name=inv)
-	return "Overdue invoice + past_due + 3 failed retries"
+		return "Overdue + past_due + 3 failed retries"
+
+	if state == "suspended":
+		frappe.db.set_value("Invoice", inv, {"status": "Overdue", "due_date": "2026-05-20", "amount_paid": 0})
+		subscriptions.set_standing(sub, "past_due", changed_by="dunning")
+		subscriptions.set_standing(sub, "suspended", changed_by="dunning")
+		from press_billing.entitlements import issue_token
+
+		issue_token(team, {}, suspend=True)
+		notifications.notify(team, "invoice_overdue", context={"invoice": inv},
+			reference_doctype="Invoice", reference_name=inv)
+		return "Suspended + cap-0 suspend token"
+
+	if state == "credits":
+		# Deliberately under-fund so the prepaid shortfall + credit alert show.
+		credits.purchase(team, 1000, currency, note="Demo top-up")
+		billing.open_and_collect(inv)  # credits-first; remainder Open for dunning
+		return "prepaid credits applied + Open remainder (shortfall)"
+
+	if state == "refund":
+		total = frappe.db.get_value("Invoice", inv, "total")
+		frappe.db.set_value("Invoice", inv, {"status": "Paid", "amount_paid": total, "due_date": "2026-07-07"})
+		attempt = frappe.get_doc({
+			"doctype": "Payment Attempt", "invoice": inv, "team": team, "gateway": gateway,
+			"payment_method": pm, "amount": total, "currency": currency, "status": "captured",
+			"gateway_transaction_id": f"pi_{team}", "resolved_by": "webhook",
+		}).insert(ignore_permissions=True).name
+		frappe.get_doc({
+			"doctype": "Refund", "payment_attempt": attempt, "invoice": inv, "team": team,
+			"amount": round(total * 0.1, 2), "currency": currency, "destination": "wallet",
+			"status": "completed", "reason": "Partial overcharge",
+			"created_at": frappe.utils.now_datetime(), "completed_at": frappe.utils.now_datetime(),
+		}).insert(ignore_permissions=True)
+		credits.refund_to_wallet(team, round(total * 0.1, 2), currency=currency,
+			reference_type="Refund", reference_name=f"{team}-partial", note="Partial overcharge")
+		return "Paid + partial refund → wallet"
+
+	# active / grandfathered
+	frappe.db.set_value("Invoice", inv, {"status": "Open", "due_date": "2026-07-07"})
+	return "grandfathered (locked launch rate)" if state == "grandfathered" else "active, open current invoice"
 
 
-def scenario_suspended() -> str:
-	"""Dunning escalated: standing suspended + a cap-0 suspend directive token."""
-	team = "demo-suspended"
-	_base(team, tier="t1", gst=True)
-	card = _card(team, STRIPE_GW)
-	sub = _subscription(team, card, STRIPE_GW)
-	_provision(team, "srv-su-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	frappe.db.set_value("Invoice", inv, {"status": "Overdue", "due_date": "2026-05-20", "amount_paid": 0})
-	subscriptions.set_standing(sub, "past_due", changed_by="dunning")
-	subscriptions.set_standing(sub, "suspended", changed_by="dunning")
-	from press_billing.entitlements import issue_token
-
-	issue_token(team, {}, suspend=True)
-	notifications.notify(team, "invoice_overdue", context={"invoice": inv},
-		reference_doctype="Invoice", reference_name=inv)
-	return "Suspended + cap-0 suspend token on the entitlement channel"
+# --- catalog / config builders ----------------------------------------------
 
 
-def scenario_trial() -> str:
-	"""Free/trial = entry tier → invoice_type cost_report (computed, not charged)."""
-	team = "demo-trial"
-	_base(team, tier="t0", gst=False)  # entry tier
-	sub = _subscription(team)
-	_provision(team, "srv-tr-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	billing.open_and_collect(inv)  # cost_report → opened, never charged
-	return "cost_report invoice (trial subsidy)"
+def _tiers():
+	for level, seq, default, cap, res, inv, paid in TIERS:
+		_upsert("Trust Tier Level", level, {
+			"tier": level, "sequence": seq, "is_default": default,
+			"max_spend": cap, "max_resource_count": res,
+			"min_paid_invoices": inv, "min_cumulative_paid": paid,
+		}, newname=True)
 
 
-def scenario_credits_only() -> str:
-	"""Credits-only team: credits applied first, remainder left Open (no card)."""
-	team = "demo-credits"
-	_base(team, tier="t1", gst=True)
-	sub = _subscription(team)  # no card / gateway
-	_provision(team, "srv-cr-1", 3200)
-	credits.purchase(team, 2000, "INR", note="Demo top-up")
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	billing.open_and_collect(inv)  # credits-first; remainder stays Open for dunning
-	return "credits applied + Open remainder; wallet-gated"
+def _catalog():
+	for slug, title, vcpu, ram, disk, transfer, base_inr in PLAN_SIZES:
+		rates = []
+		for cslug, _label, _cur in CLUSTERS:
+			for currency in CURRENCIES:
+				rate = round(base_inr * CLUSTER_MULT[cslug] / FX[currency], 2)
+				rates.append({"cluster": cslug, "currency": currency, "rate": rate})
+		_upsert("Plan", slug, {
+			"title": title, "billing_cycle": "monthly", "is_active": 1, "rates": rates,
+			"includes": [
+				{"resource_type": "compute", "quantity": vcpu, "unit": "vCPU"},
+				{"resource_type": "memory", "quantity": ram, "unit": "GB"},
+				{"resource_type": "disk", "quantity": disk, "unit": "GB"},
+				{"resource_type": "transfer", "quantity": transfer, "unit": "GB"},
+			],
+		}, newname=True)
+
+	_upsert("Add-on", ADDON, {
+		"title": "Bandwidth Overage", "resource_type": "transfer", "unit": "GB",
+		"billing_type": "metered", "billing_interval": "monthly",
+		"rates": [{"cluster": "", "currency": c, "rate": ADDON_RATE[c]} for c in CURRENCIES],
+	}, newname=True)
 
 
-def scenario_refund() -> str:
-	"""A Paid invoice with a full dispute (to source) and a partial overcharge
-	(to wallet)."""
-	team = "demo-refund"
-	_base(team, tier="t1", gst=True)
-	card = _card(team, STRIPE_GW)
-	sub = _subscription(team, card, STRIPE_GW)
-	_provision(team, "srv-rf-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	total = frappe.db.get_value("Invoice", inv, "total")
-	frappe.db.set_value("Invoice", inv, {"status": "Paid", "amount_paid": total, "due_date": "2026-07-07"})
-	attempt = frappe.get_doc({
-		"doctype": "Payment Attempt", "invoice": inv, "team": team, "gateway": STRIPE_GW,
-		"payment_method": card, "amount": total, "currency": "INR", "status": "captured",
-		"gateway_transaction_id": "pi_demo_refund", "resolved_by": "webhook",
+def _gateways():
+	for currency, name in STRIPE.items():
+		_upsert("Payment Gateway", name, {
+			"title": f"Stripe ({currency})", "adapter_key": "stripe", "currency": currency,
+			"api_secret": "sk_test_demo", "webhook_secret": "whsec_demo",
+			"is_enabled": 1, "is_default_for_currency": 1,
+		}, newname=True)
+	_upsert("Payment Gateway", RAZORPAY, {
+		"title": "Razorpay (India)", "adapter_key": "razorpay", "currency": "INR",
+		"api_key": "rzp_test", "api_secret": "rzp_secret", "webhook_secret": "rzp_whsec",
+		"is_enabled": 1, "supports_mandates": 1,
+	}, newname=True)
+
+
+def _tier(team, level):
+	cap = next(t[3] for t in TIERS if t[0] == level)
+	res = next(t[4] for t in TIERS if t[0] == level)
+	_upsert("Trust Tier", team, {
+		"team": team, "level": level, "tier": level,
+		"max_spend": cap, "max_resource_count": res, "manual_override": 1,
+	})
+
+
+def _tax(team, currency):
+	tax_type, rate = TAX_BY_CURRENCY[currency]
+	_upsert("Tax Profile", team, {"team": team, "output_tax_type": tax_type, "output_tax_rate": rate})
+
+
+def _profile(team, currency, cluster, prepaid):
+	region = next(label for slug, label, _c in CLUSTERS if slug == cluster)
+	india = currency == "INR"
+	_upsert("Billing Profile", team, {
+		"team": team, "legal_name": f"{team.replace('-', ' ').title()} Ltd",
+		"email": f"billing@{team}.example",
+		"gstin": "27AAPFU0939F1ZV" if india else None,
+		"address_line1": "1 Demo Street", "city": region.split("—")[-1].strip(),
+		"state": "Maharashtra" if india else "", "country": "India" if india else region.split("—")[0].strip(),
+		"pincode": "400001" if india else "",
+		"billing_mode": "prepaid" if prepaid else "postpaid",
+	})
+
+
+def _payment_setup(team, currency, state):
+	"""Return (gateway, payment_method) for the team's terminal state."""
+	if state in ("credits", "trial"):
+		return None, None  # prepaid wallet / unpaid trial — no card
+	if currency == "INR" and team == "wayne-ent":
+		# An INR team on UPI Autopay (mandate ceiling = tier cap).
+		pm = frappe.get_doc({
+			"doctype": "Payment Method", "team": team, "gateway": RAZORPAY,
+			"method_type": "upi_autopay", "status": "active", "display_label": "UPI Autopay",
+			"gateway_method_id": f"token_{team}", "gateway_customer_id": f"cust_{team}",
+			"mandate_max_amount": 200000, "mandate_currency": "INR", "is_default": 1,
+			"validated_at": frappe.utils.now_datetime(),
+		}).insert(ignore_permissions=True).name
+		return RAZORPAY, pm
+	gateway = STRIPE[currency]
+	pm = frappe.get_doc({
+		"doctype": "Payment Method", "team": team, "gateway": gateway, "method_type": "card",
+		"status": "active", "display_label": "Visa ····4242", "gateway_method_id": f"pm_{team}",
+		"gateway_customer_id": f"cus_{team}", "expiry_month": 11, "expiry_year": 2030,
+		"is_default": 1, "validated_at": frappe.utils.now_datetime(),
 	}).insert(ignore_permissions=True).name
-	# Full dispute → source (invoice stays Paid).
+	return gateway, pm
+
+
+def _failed_attempt(team, invoice, pm, gateway, retry):
 	frappe.get_doc({
-		"doctype": "Refund", "payment_attempt": attempt, "invoice": inv, "team": team,
-		"amount": total, "currency": "INR", "destination": "source", "status": "completed",
-		"gateway_refund_id": "re_demo_full", "reason": "Full dispute",
-		"created_at": frappe.utils.now_datetime(), "completed_at": frappe.utils.now_datetime(),
+		"doctype": "Payment Attempt", "invoice": invoice, "team": team, "gateway": gateway,
+		"payment_method": pm, "amount": frappe.db.get_value("Invoice", invoice, "expected_collection"),
+		"currency": frappe.db.get_value("Invoice", invoice, "currency"), "status": "failed",
+		"failure_code": "card_declined", "failure_reason": "Your card was declined.",
+		"retry_number": retry, "completed_at": frappe.utils.now_datetime(),
 	}).insert(ignore_permissions=True)
-	# Partial overcharge → wallet credit (applied next cycle).
-	wallet = credits.refund_to_wallet(team, 200, currency="INR", reference_type="Refund",
-		reference_name="demo-partial", note="Partial overcharge")
-	frappe.get_doc({
-		"doctype": "Refund", "payment_attempt": attempt, "invoice": inv, "team": team,
-		"amount": 200, "currency": "INR", "destination": "wallet", "status": "completed",
-		"reason": "Partial overcharge", "created_at": frappe.utils.now_datetime(),
-		"completed_at": frappe.utils.now_datetime(),
-	}).insert(ignore_permissions=True)
-	return f"full refund→source + partial→wallet (balance {wallet['new_balance']})"
-
-
-def scenario_sez() -> str:
-	"""SEZ/export: zero-rated output tax WITH a compliance reason."""
-	team = "demo-sez"
-	_base(team, tier="t1", gst=False)
-	demo._replace("Tax Profile", team, {"output_tax_type": "GST", "output_tax_rate": 18,
-		"zero_rated": 1, "zero_rating_reason": "sez_lut"})
-	sub = _subscription(team)
-	_provision(team, "srv-sez-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	frappe.db.set_value("Invoice", inv, {"status": "Open", "due_date": "2026-07-07"})
-	return "zero-rated (sez_lut) — tax 0 with reason"
-
-
-def scenario_tds() -> str:
-	"""TDS withholding: total unchanged, expected_collection reduced."""
-	team = "demo-tds"
-	_base(team, tier="t1", gst=False)
-	demo._replace("Tax Profile", team, {"output_tax_type": "GST", "output_tax_rate": 18,
-		"tds_applicable": 1, "tds_rate": 10})
-	sub = _subscription(team)
-	_provision(team, "srv-tds-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	frappe.db.set_value("Invoice", inv, {"status": "Open", "due_date": "2026-07-07"})
-	return "TDS withheld — expected_collection < total"
-
-
-def scenario_reconciliation() -> str:
-	"""An ambiguous (charged-but-never-webhooked) attempt awaiting the recon job."""
-	team = "demo-recon"
-	_base(team, tier="t1", gst=True)
-	card = _card(team, STRIPE_GW)
-	sub = _subscription(team, card, STRIPE_GW)
-	_provision(team, "srv-rc-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	frappe.db.set_value("Invoice", inv, {"status": "Open", "due_date": "2026-07-07"})
-	attempt = frappe.get_doc({
-		"doctype": "Payment Attempt", "invoice": inv, "team": team, "gateway": STRIPE_GW,
-		"payment_method": card, "amount": frappe.db.get_value("Invoice", inv, "expected_collection"),
-		"currency": "INR", "status": "initiated", "gateway_transaction_id": "pi_stuck_demo",
-	}).insert(ignore_permissions=True).name
-	frappe.db.set_value("Payment Attempt", attempt,
-		"initiated_at", frappe.utils.add_to_date(frappe.utils.now_datetime(), hours=-2))
-	return "ambiguous attempt (initiated, no webhook) for reconciliation"
-
-
-def scenario_razorpay_mandate() -> str:
-	"""A Razorpay team with an active UPI Autopay mandate (ceiling = tier cap)."""
-	team = "demo-razorpay"
-	_base(team, tier="t1", gst=True)
-	mandate = frappe.get_doc({
-		"doctype": "Payment Method", "team": team, "gateway": RAZORPAY_GW,
-		"method_type": "upi_autopay", "status": "active", "display_label": "UPI Autopay",
-		"gateway_method_id": "token_demo", "gateway_customer_id": "cust_demo",
-		"mandate_max_amount": 50000, "mandate_currency": "INR", "is_default": 1,
-		"validated_at": frappe.utils.now_datetime(),
-	}).insert(ignore_permissions=True).name
-	sub = _subscription(team, mandate, RAZORPAY_GW)
-	_provision(team, "srv-rz-1", 3200)
-	inv = billing.generate_draft_invoice(sub, "2026-06-01", "2026-06-30")
-	frappe.db.set_value("Invoice", inv, {"status": "Open", "due_date": "2026-07-07"})
-	return "Razorpay UPI Autopay mandate (cap = tier ceiling)"
 
 
 # --- helpers ----------------------------------------------------------------
 
 
-def _base(team, tier, gst):
-	_wipe_team(team)
-	demo._replace("Trust Tier", team, {"tier": tier, "level": tier,
-		"max_spend": 50000 if tier == "t1" else 10000, "manual_override": 1})
-	if gst:
-		demo._replace("Tax Profile", team, {"output_tax_type": "GST", "output_tax_rate": 18})
-	_profile(team)
+def _month_periods(n):
+	"""The n closed month windows immediately before ANCHOR, oldest first."""
+	anchor = frappe.utils.getdate(ANCHOR)
+	out = []
+	for i in range(n, 0, -1):
+		start = frappe.utils.add_months(anchor, -i)
+		out.append((str(start), str(frappe.utils.get_last_day(start))))
+	return out
 
 
-def _profile(team, gstin="27AAPFU0939F1ZV"):
-	if frappe.db.exists("Billing Profile", team):
-		frappe.delete_doc("Billing Profile", team, force=True)
-	frappe.get_doc({
-		"doctype": "Billing Profile", "team": team, "legal_name": f"{team.title()} Pvt Ltd",
-		"email": f"billing@{team}.example", "gstin": gstin, "address_line1": "1 Demo Street",
-		"city": "Mumbai", "state": "Maharashtra", "country": "India", "pincode": "400001",
-		"billing_mode": "postpaid",
-	}).insert(ignore_permissions=True)
-
-
-def _subscription(team, default_pm=None, gateway=None):
-	return subscriptions.create_subscription(
-		team=team, cluster=CLUSTER, plan=PLAN, billing_cycle="monthly",
-		default_payment_method=default_pm, gateway=gateway).name
-
-
-def _provision(team, resource, rate, start="2026-06-01 00:00:00"):
-	receive_usage_events([{
-		"event_id": f"ev-{team}-{resource}", "team": team, "resource_id": resource,
-		"cluster": CLUSTER, "plan": PLAN, "shown_rate": rate, "currency": "INR",
-		"event_type": "subscribed", "effective_from": start, "effective_to": None,
-	}])
-
-
-def _card(team, gateway, label="Visa ····4242"):
-	return frappe.get_doc({
-		"doctype": "Payment Method", "team": team, "gateway": gateway, "method_type": "card",
-		"status": "active", "display_label": label, "gateway_method_id": f"pm_{team}",
-		"gateway_customer_id": f"cus_{team}", "expiry_month": 11, "expiry_year": 2030,
-		"is_default": 1, "validated_at": frappe.utils.now_datetime(),
-	}).insert(ignore_permissions=True).name
-
-
-def _failed_attempt(team, invoice, card, gateway, retry):
-	frappe.get_doc({
-		"doctype": "Payment Attempt", "invoice": invoice, "team": team, "gateway": gateway,
-		"payment_method": card, "amount": frappe.db.get_value("Invoice", invoice, "expected_collection"),
-		"currency": "INR", "status": "failed", "failure_code": "card_declined",
-		"failure_reason": "Your card was declined.", "retry_number": retry,
-		"completed_at": frappe.utils.now_datetime(),
-	}).insert(ignore_permissions=True)
-
-
-def _extra_gateways():
-	demo._replace("Payment Gateway", RAZORPAY_GW, {"title": "Razorpay (Demo)",
-		"adapter_key": "razorpay", "currency": "INR", "api_key": "rzp_test", "api_secret": "rzp_secret",
-		"webhook_secret": "rzp_whsec", "is_enabled": 1, "supports_mandates": 1})
-	demo._replace("Payment Gateway", PAYPAL_GW, {"title": "PayPal (Demo)",
-		"adapter_key": "paypal", "currency": "USD", "api_key": "pp_client", "api_secret": "pp_secret",
-		"webhook_secret": "WH-DEMO", "is_enabled": 1})
+def _upsert(doctype, name, values, newname=False):
+	if frappe.db.exists(doctype, name):
+		frappe.delete_doc(doctype, name, force=True)
+	doc = {"doctype": doctype, **values}
+	if newname:
+		doc["__newname"] = name
+	return frappe.get_doc(doc).insert(ignore_permissions=True).name
 
 
 def _ensure_signing_key():
@@ -292,31 +392,18 @@ def _ensure_signing_key():
 		pass
 
 
-def _wipe_team(team):
-	for sub in frappe.get_all("Subscription", {"team": team}, pluck="name"):
-		frappe.db.delete("Subscription Change", {"subscription": sub})
-	for dt in ("Invoice", "Payment Attempt", "Refund", "Payment Method", "Price Lock",
-			   "Usage Rollup", "Credit Ledger Entry", "Subscription", "Notification Log",
-			   "Entitlement Token"):
-		frappe.db.delete(dt, {"team": team})
-	for dt in ("Credit Wallet", "Trust Tier", "Tax Profile", "Billing Profile"):
-		if frappe.db.exists(dt, team):
-			frappe.delete_doc(dt, team, force=True)
-
-
-def clean_test_teams():
-	"""Remove test-leftover team data (team-*) so only the demo teams show."""
-	for dt in ("Invoice", "Payment Attempt", "Refund", "Payment Method", "Price Lock",
-			   "Usage Rollup", "Credit Ledger Entry", "Subscription", "Subscription Change",
-			   "Notification Log", "Entitlement Token", "Credit Wallet", "Trust Tier",
-			   "Tax Profile", "Billing Profile"):
+def _wipe_all():
+	"""Drop every press_billing record so the demo is the only data present."""
+	children = ("Plan Rate", "Plan Includes", "Add-on Rate", "Invoice Line Item",
+				"Subscription Change")
+	transactional = ("Invoice", "Payment Attempt", "Refund", "Payment Method", "Price Lock",
+					 "Usage Rollup", "Credit Ledger Entry", "Credit Wallet", "Notification Log",
+					 "Entitlement Token", "Webhook Event", "Subscription")
+	config = ("Trust Tier", "Tax Profile", "Billing Profile")
+	catalog = ("Plan", "Add-on", "Payment Gateway", "Trust Tier Level")
+	for dt in children + transactional + config + catalog:
 		try:
-			if dt == "Subscription Change":
-				subs = frappe.get_all("Subscription", filters=[["team", "like", "team%"]], pluck="name")
-				if subs:
-					frappe.db.delete("Subscription Change", {"subscription": ["in", subs]})
-			else:
-				frappe.db.delete(dt, {"team": ["like", "team%"]})
-		except Exception:  # noqa: BLE001
+			frappe.db.delete(dt)
+		except Exception:  # noqa: BLE001 — some doctypes may not exist on older sites
 			pass
 	frappe.db.commit()

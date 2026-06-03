@@ -48,6 +48,11 @@ def _team_clusters(team: str) -> list[str]:
 	return [c for c in set(frappe.get_all("Price Lock", {"team": team}, pluck="cluster")) if c]
 
 
+def _team_currency(team: str) -> str:
+	"""A team bills in a single currency — read it off any of its price-locks."""
+	return frappe.db.get_value("Price Lock", {"team": team}, "currency") or "INR"
+
+
 @frappe.whitelist()
 def get_forecast(team: str | None = None) -> dict:
 	"""Current-month forecast: projected month-end bill vs credit balance.
@@ -72,18 +77,24 @@ def get_forecast(team: str | None = None) -> dict:
 	credit_balance = frappe.utils.flt(credits.get_balance(team)["balance"])
 	mode = frappe.db.get_value("Billing Profile", team, "billing_mode") or "postpaid"
 	shortfall = max(0.0, frappe.utils.flt(projected_total - credit_balance, 2))
+	currency = frappe.db.get_value("Price Lock", {"team": team}, "currency") or "INR"
 
 	return {
 		"period_start": str(month_start),
 		"period_end": str(month_end),
 		"projected_total": projected_total,
+		"subtotal": subtotal,
+		"tax_amount": tax["output_tax_amount"],
+		"tax_type": tax["output_tax_type"],
 		"credit_balance": credit_balance,
 		"shortfall": shortfall,
 		"days_remaining": (month_end - today).days,
 		"billing_mode": mode,
+		"currency": currency,
 		# On prepaid, warn when the projected bill outruns the wallet.
 		"credit_alert": mode == "prepaid" and shortfall > 0,
-		"line_items": line_items,
+		# Spell out each service/plan + metered overage driving the projection.
+		"line_items": [_describe_line(team, frappe._dict(li)) for li in line_items],
 	}
 
 
@@ -125,13 +136,44 @@ def get_invoice(name: str) -> dict:
 		"zero_rating_reason": doc.zero_rating_reason, "total": doc.total,
 		"credit_applied": doc.credit_applied, "expected_collection": doc.expected_collection,
 		"amount_paid": doc.amount_paid, "due_date": str(doc.due_date) if doc.due_date else None,
-		"items": [
-			{"resource_type": li.resource_type, "plan": li.plan,
-			 "subscription_resource": li.subscription_resource,
-			 "days": li.days, "quantity": li.quantity, "rate": li.rate, "amount": li.amount}
-			for li in doc.items
-		],
+		"items": [_describe_line(doc.team, li) for li in doc.items],
 	}
+
+
+def _describe_line(team: str, li) -> dict:
+	"""Turn a stored line item into a human-readable charge row.
+
+	Resource slugs and plan IDs mean nothing to a customer, so we resolve the
+	plan/add-on TITLE and spell out what drove the charge: a plan's monthly fee
+	(prorated days), or a metered overage above the plan's included allowance.
+	"""
+	row = {
+		"resource_type": li.resource_type, "plan": li.plan,
+		"subscription_resource": li.subscription_resource,
+		"days": li.days, "quantity": li.quantity, "rate": li.rate, "amount": li.amount,
+		"unit": li.unit,
+	}
+	if li.resource_type == "bundle":
+		title = frappe.db.get_value("Plan", li.plan, "title") if li.plan else None
+		row["item"] = title or li.plan or "Subscription plan"
+		row["kind"] = "Plan"
+		row["detail"] = f"{li.days} day(s) this period" if li.days else None
+	else:
+		addon = frappe.db.get_value("Add-on", {"resource_type": li.resource_type}, ["title"])
+		row["item"] = addon or f"{li.resource_type.title()} overage"
+		row["kind"] = "Overage"
+		# Surface the included allowance the usage ran past, so the bill is legible.
+		allowance = frappe.db.get_value(
+			"Usage Rollup",
+			{"team": team, "resource_id": li.subscription_resource, "resource_type": li.resource_type},
+			"locked_allowance",
+		)
+		unit = li.unit or "units"
+		if allowance is not None:
+			row["detail"] = f"{frappe.utils.flt(li.quantity):g} {unit} over {frappe.utils.flt(allowance):g} {unit} included"
+		else:
+			row["detail"] = f"{frappe.utils.flt(li.quantity):g} {unit} metered"
+	return row
 
 
 @frappe.whitelist()
@@ -150,7 +192,7 @@ def list_payment_methods(team: str | None = None) -> list[dict]:
 @frappe.whitelist()
 def get_credit_balance(team: str | None = None) -> dict:
 	team = _resolve_team(team)
-	return {"balance": frappe.utils.flt(credits.get_balance(team)["balance"]), "currency": "INR"}
+	return {"balance": frappe.utils.flt(credits.get_balance(team)["balance"]), "currency": _team_currency(team)}
 
 
 @frappe.whitelist()
@@ -375,8 +417,10 @@ def get_team_overview(team: str | None = None) -> dict:
 	standing = frappe.db.get_value("Subscription", {"team": team}, "account_standing") or "current"
 	mode = frappe.db.get_value("Billing Profile", team, "billing_mode") or "postpaid"
 	resources = frappe.db.count("Price Lock", {"team": team, "ended_at": ["is", "not set"]})
+	clusters = len(_team_clusters(team))
 	return {"team": team, "tier": tier.get("tier"), "max_spend": frappe.utils.flt(tier.get("max_spend")),
-			"standing": standing, "billing_mode": mode, "resources": resources}
+			"standing": standing, "billing_mode": mode, "resources": resources, "clusters": clusters,
+			"currency": _team_currency(team)}
 
 
 @frappe.whitelist()

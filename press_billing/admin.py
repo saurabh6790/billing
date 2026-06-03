@@ -302,25 +302,29 @@ def get_delinquent_teams() -> list[dict]:
 
 @frappe.whitelist()
 def get_cluster_consumption() -> list[dict]:
-	"""Cluster-wise resource consumption (active price-locks) + monthly run-rate."""
+	"""Cluster-wise resource consumption (active price-locks) + monthly run-rate.
+
+	Run-rate is normalised to INR (via each plan's INR catalog rate) so regions
+	billed in EUR/USD are comparable on one axis.
+	"""
 	require_billing_admin()
 	out = {}
 	for lock in _active_locks():
-		c = out.setdefault(lock.cluster or "global", {"cluster": lock.cluster or "global", "resources": 0, "monthly": 0.0})
+		c = out.setdefault(lock.cluster or "global", {"cluster": lock.cluster or "global", "resources": 0, "monthly": 0.0, "currency": "INR"})
 		c["resources"] += 1
-		c["monthly"] = frappe.utils.flt(c["monthly"] + frappe.utils.flt(lock.locked_rate), 2)
+		c["monthly"] = frappe.utils.flt(c["monthly"] + _plan_monthly_inr(lock.plan, lock.cluster), 2)
 	return sorted(out.values(), key=lambda r: r["monthly"], reverse=True)
 
 
 @frappe.whitelist()
 def get_plan_consumption() -> list[dict]:
-	"""Plan-wise consumption analysis."""
+	"""Plan-wise consumption analysis (INR-normalised monthly run-rate)."""
 	require_billing_admin()
 	out = {}
 	for lock in _active_locks():
-		p = out.setdefault(lock.plan or "—", {"plan": lock.plan or "—", "resources": 0, "monthly": 0.0})
+		p = out.setdefault(lock.plan or "—", {"plan": lock.plan or "—", "resources": 0, "monthly": 0.0, "currency": "INR"})
 		p["resources"] += 1
-		p["monthly"] = frappe.utils.flt(p["monthly"] + frappe.utils.flt(lock.locked_rate), 2)
+		p["monthly"] = frappe.utils.flt(p["monthly"] + _plan_monthly_inr(lock.plan, lock.cluster), 2)
 	return sorted(out.values(), key=lambda r: r["monthly"], reverse=True)
 
 

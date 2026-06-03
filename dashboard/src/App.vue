@@ -31,6 +31,7 @@ import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { FormControl, createResource } from 'frappe-ui';
 import LucideLayoutDashboard from '~icons/lucide/layout-dashboard';
+import LucideTrendingUp from '~icons/lucide/trending-up';
 import LucideReceipt from '~icons/lucide/receipt';
 import LucideCreditCard from '~icons/lucide/credit-card';
 import LucideWallet from '~icons/lucide/wallet';
@@ -45,6 +46,7 @@ function switchTeam(t) { store.team = t; }
 function setView(v) { store.view = v; router.push(v === 'admin' ? '/billing/admin' : '/billing'); }
 const customerNav = [
   { label: 'Overview', to: '/billing', icon: LucideLayoutDashboard },
+  { label: 'Forecast', to: '/billing/forecast', icon: LucideTrendingUp },
   { label: 'Invoices', to: '/billing/invoices', icon: LucideReceipt },
   { label: 'Credits', to: '/billing/credits', icon: LucideWallet },
   { label: 'Payment Methods', to: '/billing/methods', icon: LucideCreditCard },
