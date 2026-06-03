@@ -47,3 +47,26 @@ def push_plans_to_agent(agent_url: str, plans) -> dict:
 	)
 	response.raise_for_status()
 	return response.json().get("message")
+
+
+@frappe.whitelist()
+def receive_usage_events(events) -> dict:
+	"""Agent -> Central: ingest reported plan-change events into the lock ledger.
+
+	Each event carries a stable `event_id`; locking is idempotent on it, so the
+	Agent can safely re-push. Only acknowledged event_ids are returned — the
+	Agent marks exactly those `synced_to_central`, so a partial failure is
+	retried on the next push rather than silently dropped.
+	"""
+	from press_billing.pricelock import lock_from_event
+
+	if isinstance(events, str):
+		events = frappe.parse_json(events)
+
+	acknowledged = []
+	for event in events:
+		event_id = lock_from_event(event)
+		if event_id:
+			acknowledged.append(event_id)
+
+	return {"acknowledged": acknowledged}
