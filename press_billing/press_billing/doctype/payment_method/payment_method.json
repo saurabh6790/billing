@@ -17,7 +17,8 @@
   "reauth_required",
   "section_break_gateway",
   "gateway_method_id",
-  "mandate_customer_id",
+  "gateway_customer_id",
+  "setup_reference",
   "display_label",
   "section_break_card",
   "expiry_month",
@@ -89,9 +90,16 @@
    "description": "Stripe pm_xxx / Razorpay mandate (token) id"
   },
   {
-   "fieldname": "mandate_customer_id",
+   "fieldname": "gateway_customer_id",
    "fieldtype": "Data",
-   "label": "Gateway Customer ID"
+   "label": "Gateway Customer ID",
+   "description": "Gateway-side customer reference (Stripe cus_xxx / Razorpay cust_xxx) — used by both cards and mandates"
+  },
+  {
+   "fieldname": "setup_reference",
+   "fieldtype": "Data",
+   "label": "Setup Reference",
+   "description": "Gateway setup handle (Stripe SetupIntent id) captured at initiation, for reconcile"
   },
   {
    "fieldname": "display_label",

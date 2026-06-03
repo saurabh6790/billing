@@ -124,7 +124,7 @@ class TestStripeAdapter(GatewayAdapterContract, IntegrationTestCase):
 	def validation_inputs(self):
 		import frappe
 
-		return frappe._dict(gateway_method_id="pm_test", customer_id="cus_test")
+		return frappe._dict(gateway_method_id="pm_test", gateway_customer_id="cus_test")
 
 	@contextmanager
 	def stub_validation_success(self):

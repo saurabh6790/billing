@@ -49,7 +49,7 @@ def setup_mandate(team: str, gateway: str, customer_id: str | None = None, is_de
 			"status": "pending_validation",
 			"mandate_max_amount": cap,
 			"mandate_currency": "INR",
-			"mandate_customer_id": customer_id,
+			"gateway_customer_id": customer_id,
 			"is_default": is_default,
 		}
 	).insert(ignore_permissions=True)
@@ -88,7 +88,7 @@ def cancel_mandate(payment_method: str):
 	method = frappe.get_doc("Payment Method", payment_method)
 	if method.gateway_method_id:
 		_adapter(method.gateway).cancel_mandate(
-			method.gateway_method_id, customer_reference=method.mandate_customer_id
+			method.gateway_method_id, customer_reference=method.gateway_customer_id
 		)
 	method.status = "cancelled"
 	method.save(ignore_permissions=True)
@@ -102,7 +102,7 @@ def reauthorise_mandate(payment_method: str) -> dict:
 	confirmed — the customer is never left without a working mandate.
 	"""
 	method = frappe.get_doc("Payment Method", payment_method)
-	return setup_mandate(method.team, method.gateway, customer_id=method.mandate_customer_id)
+	return setup_mandate(method.team, method.gateway, customer_id=method.gateway_customer_id)
 
 
 # --- cap reconciliation -----------------------------------------------------

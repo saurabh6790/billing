@@ -143,23 +143,12 @@ app_license = "mit"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"press_billing.tasks.all"
-# 	],
-# 	"daily": [
-# 		"press_billing.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"press_billing.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"press_billing.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"press_billing.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	# Cards expire at the end of their printed month; flip lapsed ones monthly.
+	"monthly": [
+		"press_billing.payments.expire_payment_methods",
+	],
+}
 
 # Testing
 # -------
