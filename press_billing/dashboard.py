@@ -70,14 +70,19 @@ def get_forecast(team: str | None = None) -> dict:
 	tax = resolve_tax(team, subtotal)
 	projected_total = frappe.utils.flt(subtotal + tax["output_tax_amount"], 2)
 	credit_balance = frappe.utils.flt(credits.get_balance(team)["balance"])
+	mode = frappe.db.get_value("Billing Profile", team, "billing_mode") or "postpaid"
+	shortfall = max(0.0, frappe.utils.flt(projected_total - credit_balance, 2))
 
 	return {
 		"period_start": str(month_start),
 		"period_end": str(month_end),
 		"projected_total": projected_total,
 		"credit_balance": credit_balance,
-		"shortfall": max(0.0, frappe.utils.flt(projected_total - credit_balance, 2)),
+		"shortfall": shortfall,
 		"days_remaining": (month_end - today).days,
+		"billing_mode": mode,
+		# On prepaid, warn when the projected bill outruns the wallet.
+		"credit_alert": mode == "prepaid" and shortfall > 0,
 		"line_items": line_items,
 	}
 
@@ -287,3 +292,120 @@ def save_billing_settings(team=None, billing_mode=None, min_balance=None, spend_
 		doc.spend_alert_threshold = frappe.utils.flt(spend_alert_threshold)
 	doc.save(ignore_permissions=True)
 	return {"saved": True, "billing_mode": doc.billing_mode}
+
+
+# --- real gateway top-up (Razorpay Checkout / Stripe PaymentIntent) ----------
+
+
+@frappe.whitelist()
+def create_topup_order(team=None, amount=None, gateway=None) -> dict:
+	"""Start a wallet top-up by creating a real gateway order. The UI opens the
+	gateway's checkout against it; the wallet is credited only after the gateway
+	confirms (verify in confirm_topup) — never magically."""
+	team = _resolve_team(team)
+	amount = frappe.utils.flt(amount)
+	if amount <= 0:
+		frappe.throw("Top-up amount must be greater than zero.", frappe.ValidationError)
+	gw = gateway or frappe.db.get_value("Payment Gateway", {"adapter_key": "razorpay", "is_enabled": 1}, "name")
+	if not gw:
+		frappe.throw("No payment gateway configured for top-ups.", frappe.ValidationError)
+	from press_billing.gateways.registry import get_adapter
+
+	adapter = get_adapter(frappe.get_doc("Payment Gateway", gw))
+	receipt = f"topup-{team}-{frappe.generate_hash(8)}"
+	handles = adapter.create_order(amount, "INR", receipt, notes={"team": team, "purpose": "wallet_topup"})
+	return {"gateway": gw, "adapter_key": frappe.db.get_value("Payment Gateway", gw, "adapter_key"),
+			"amount": amount, "receipt": receipt, **handles}
+
+
+@frappe.whitelist()
+def confirm_topup(team=None, amount=None, gateway=None, razorpay_order_id=None,
+				  razorpay_payment_id=None, razorpay_signature=None) -> dict:
+	"""Credit the wallet only after the gateway signature verifies — the money
+	really moved at the gateway first."""
+	team = _resolve_team(team)
+	from press_billing.gateways.registry import get_adapter
+
+	adapter = get_adapter(frappe.get_doc("Payment Gateway", gateway))
+	ok = adapter.verify_payment_signature({
+		"razorpay_order_id": razorpay_order_id,
+		"razorpay_payment_id": razorpay_payment_id,
+		"razorpay_signature": razorpay_signature,
+	})
+	if not ok:
+		frappe.throw("Payment signature verification failed.", frappe.ValidationError)
+	from press_billing import credits
+
+	return credits.purchase(team, frappe.utils.flt(amount), "INR",
+		reference_name=razorpay_payment_id, note=f"Wallet top-up ({razorpay_payment_id})")
+
+
+@frappe.whitelist()
+def setup_payment_method_order(team=None, gateway=None) -> dict:
+	"""Begin adding a Razorpay UPI Autopay mandate (ceiling = trust-tier cap).
+	Returns the order handles the UI runs Razorpay Checkout against (#08)."""
+	team = _resolve_team(team)
+	gw = gateway or frappe.db.get_value("Payment Gateway", {"adapter_key": "razorpay", "is_enabled": 1}, "name")
+	from press_billing import mandates
+
+	return mandates.setup_mandate(team, gw)
+
+
+@frappe.whitelist()
+def confirm_payment_method_order(payment_method=None, razorpay_payment_id=None,
+								 razorpay_order_id=None, razorpay_signature=None, razorpay_token_id=None) -> dict:
+	"""Confirm the Razorpay Checkout callback — verifies the signature, activates
+	the mandate. Real gateway verification, not a stub."""
+	team = frappe.db.get_value("Payment Method", payment_method, "team")
+	require_team_access(team)
+	from press_billing import mandates
+
+	method = mandates.confirm_mandate(payment_method, {
+		"razorpay_payment_id": razorpay_payment_id, "razorpay_order_id": razorpay_order_id,
+		"razorpay_signature": razorpay_signature, "razorpay_token_id": razorpay_token_id,
+	})
+	return {"payment_method": method.name, "status": method.status}
+
+
+@frappe.whitelist()
+def get_team_overview(team: str | None = None) -> dict:
+	"""Team header: trust tier, account standing, payment mode, resource count."""
+	team = _resolve_team(team)
+	tier = frappe.db.get_value("Trust Tier", team, ["tier", "max_spend"], as_dict=True) or {}
+	standing = frappe.db.get_value("Subscription", {"team": team}, "account_standing") or "current"
+	mode = frappe.db.get_value("Billing Profile", team, "billing_mode") or "postpaid"
+	resources = frappe.db.count("Price Lock", {"team": team, "ended_at": ["is", "not set"]})
+	return {"team": team, "tier": tier.get("tier"), "max_spend": frappe.utils.flt(tier.get("max_spend")),
+			"standing": standing, "billing_mode": mode, "resources": resources}
+
+
+@frappe.whitelist()
+def list_switchable_teams() -> list[dict]:
+	"""POC team switcher — teams that have billing data, with their tier/standing."""
+	teams = sorted(t for t in set(frappe.get_all("Subscription", pluck="team"))
+				   | set(frappe.get_all("Billing Profile", pluck="team")) if t)
+	out = []
+	for t in teams:
+		out.append({"team": t, "tier": frappe.db.get_value("Trust Tier", t, "tier"),
+					"standing": frappe.db.get_value("Subscription", {"team": t}, "account_standing") or "current"})
+	return out
+
+
+@frappe.whitelist()
+def remove_payment_method(payment_method=None) -> dict:
+	"""Remove a card/mandate; promotes another active method to default."""
+	team = frappe.db.get_value("Payment Method", payment_method, "team")
+	require_team_access(team)
+	from press_billing import payments
+
+	return payments.delete_payment_method(payment_method)
+
+
+@frappe.whitelist()
+def set_default_payment_method(payment_method=None) -> dict:
+	team = frappe.db.get_value("Payment Method", payment_method, "team")
+	require_team_access(team)
+	from press_billing import payments
+
+	doc = payments.set_default_payment_method(payment_method)
+	return {"payment_method": doc.name, "is_default": doc.is_default}

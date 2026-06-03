@@ -7,16 +7,18 @@
           <Button v-for="q in quick" :key="q" :variant="amount == q ? 'solid' : 'subtle'" theme="gray" @click="amount = q">{{ money(q) }}</Button>
         </div>
         <FormControl type="number" label="Amount (₹)" v-model="amount" />
-        <FormControl type="select" label="Pay with" v-model="method" :options="methodOptions" />
         <div v-if="!hasProfile">
           <p class="mb-2 text-sm font-medium text-ink-gray-8">Billing details</p>
           <BillingFields :fields="form" />
         </div>
+        <p class="rounded-md bg-surface-gray-2 px-3 py-2 text-xs text-ink-gray-6">
+          Opens Razorpay Checkout. Your wallet is credited only after Razorpay confirms the payment (signature verified server-side).
+        </p>
         <ErrorMessage :message="error" />
       </div>
     </template>
     <template #actions>
-      <Button variant="solid" theme="gray" :loading="loading" @click="submit">Pay {{ money(amount) }}</Button>
+      <Button variant="solid" theme="gray" :loading="loading" @click="submit">Pay {{ money(amount) }} with Razorpay</Button>
     </template>
   </Dialog>
 </template>
@@ -24,23 +26,27 @@
 import { reactive, ref, computed } from 'vue';
 import { Dialog, Button, FormControl, ErrorMessage, createResource } from 'frappe-ui';
 import BillingFields from './BillingFields.vue';
-import { money } from '../utils';
-const props = defineProps({ modelValue: Boolean, team: String, balance: Number, methods: Array, hasProfile: Boolean });
+import { openRazorpay, money } from '../utils';
+const props = defineProps({ modelValue: Boolean, team: String, balance: Number, hasProfile: Boolean });
 const emit = defineEmits(['update:modelValue', 'success']);
 const show = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });
 const quick = [1000, 2000, 5000, 10000];
-const amount = ref(5000); const method = ref(null);
+const amount = ref(5000);
 const form = reactive({ legal_name: '', gstin: '', email: '', phone: '', address_line1: '', city: '', state: '', pincode: '' });
 const error = ref(''); const loading = ref(false);
-const methodOptions = computed(() => [{ label: 'Add new card', value: '' }, ...(props.methods || []).map((m) => ({ label: m.display_label || m.method_type, value: m.name }))]);
 const saveProfile = createResource({ url: 'press_billing.dashboard.save_billing_profile' });
-const res = createResource({ url: 'press_billing.dashboard.purchase_credits' });
+const createOrder = createResource({ url: 'press_billing.dashboard.create_topup_order' });
+const confirm = createResource({ url: 'press_billing.dashboard.confirm_topup' });
 async function submit() {
   error.value = ''; loading.value = true;
   try {
     if (!props.hasProfile) await saveProfile.submit({ team: props.team, ...form });
-    await res.submit({ team: props.team, amount: amount.value, payment_method: method.value || null });
+    const order = await createOrder.submit({ team: props.team, amount: amount.value });
+    const resp = await openRazorpay({ key: order.key_id, order_id: order.order_id, amount: order.amount,
+      description: 'Wallet top-up', prefill: { name: form.legal_name, email: form.email } });
+    await confirm.submit({ team: props.team, amount: amount.value, gateway: order.gateway,
+      razorpay_order_id: resp.razorpay_order_id, razorpay_payment_id: resp.razorpay_payment_id, razorpay_signature: resp.razorpay_signature });
     emit('success'); show.value = false;
-  } catch (e) { error.value = e.messages?.[0] || String(e); } finally { loading.value = false; }
+  } catch (e) { error.value = e.messages?.[0] || e.message || String(e); } finally { loading.value = false; }
 }
 </script>

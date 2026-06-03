@@ -235,26 +235,125 @@ def get_metrics() -> dict:
 	}
 
 
+
+
+def _active_locks(filters=None):
+	f = {"ended_at": ["is", "not set"]}
+	if filters:
+		f.update(filters)
+	return frappe.get_all("Price Lock", filters=f, fields=["team", "cluster", "plan", "locked_rate"])
+
+
 @frappe.whitelist()
 def list_teams() -> list[dict]:
-	"""Per-team rollup for the admin teams report."""
+	"""Per-team rollup: standing, tier, MRR, resources, open invoices, credit."""
 	require_billing_admin()
 	from press_billing import credits
 
 	teams = {}
-	for s in frappe.get_all(
-		"Subscription", fields=["team", "plan", "cluster", "account_standing", "billing_cycle"]
-	):
-		t = teams.setdefault(s.team, {"team": s.team, "standing": "current", "mrr": 0.0, "subscriptions": 0})
+	for s in frappe.get_all("Subscription", fields=["team", "plan", "cluster", "account_standing", "billing_cycle"]):
+		t = teams.setdefault(s.team, {"team": s.team, "standing": "current", "mrr": 0.0, "subscriptions": 0, "resources": 0})
 		rate = _plan_monthly_inr(s.plan, s.cluster)
 		t["mrr"] += rate / 12 if s.billing_cycle == "annual" else rate
 		t["subscriptions"] += 1
 		if _STANDING_RANK.get(s.account_standing, 0) > _STANDING_RANK.get(t["standing"], 0):
 			t["standing"] = s.account_standing
+	for lock in _active_locks():
+		if lock.team in teams:
+			teams[lock.team]["resources"] += 1
 	rows = []
 	for t in teams.values():
 		t["mrr"] = frappe.utils.flt(t["mrr"], 2)
+		t["tier"] = frappe.db.get_value("Trust Tier", t["team"], "tier") or "—"
 		t["open_invoices"] = frappe.db.count("Invoice", {"team": t["team"], "status": ["in", ["Open", "Overdue"]]})
+		t["invoices"] = frappe.db.count("Invoice", {"team": t["team"]})
 		t["credit_balance"] = frappe.utils.flt(credits.get_balance(t["team"])["balance"])
 		rows.append(t)
 	return sorted(rows, key=lambda r: r["mrr"], reverse=True)
+
+
+@frappe.whitelist()
+def get_payment_failures(limit: int = 50) -> list[dict]:
+	"""Drill-down: which charges are failing and why."""
+	require_billing_admin()
+	return frappe.get_all(
+		"Payment Attempt", filters={"status": "failed"},
+		fields=["name", "team", "invoice", "amount", "gateway", "failure_code", "failure_reason", "creation"],
+		order_by="creation desc", limit=limit)
+
+
+@frappe.whitelist()
+def get_delinquent_teams() -> list[dict]:
+	"""Drill-down: who is past_due/suspended + their outstanding invoices."""
+	require_billing_admin()
+	seen, rows = set(), []
+	for s in frappe.get_all("Subscription", filters=[["account_standing", "in", ["past_due", "suspended"]]],
+			fields=["team", "account_standing"]):
+		if s.team in seen:
+			continue
+		seen.add(s.team)
+		overdue = frappe.get_all("Invoice", filters={"team": s.team, "status": ["in", ["Open", "Overdue"]]},
+			fields=["name", "status", "total", "amount_paid", "due_date"], order_by="due_date asc")
+		rows.append({"team": s.team, "standing": s.account_standing,
+			"outstanding": frappe.utils.flt(sum(frappe.utils.flt(i.total) - frappe.utils.flt(i.amount_paid) for i in overdue), 2),
+			"invoices": overdue})
+	return rows
+
+
+@frappe.whitelist()
+def get_cluster_consumption() -> list[dict]:
+	"""Cluster-wise resource consumption (active price-locks) + monthly run-rate."""
+	require_billing_admin()
+	out = {}
+	for lock in _active_locks():
+		c = out.setdefault(lock.cluster or "global", {"cluster": lock.cluster or "global", "resources": 0, "monthly": 0.0})
+		c["resources"] += 1
+		c["monthly"] = frappe.utils.flt(c["monthly"] + frappe.utils.flt(lock.locked_rate), 2)
+	return sorted(out.values(), key=lambda r: r["monthly"], reverse=True)
+
+
+@frappe.whitelist()
+def get_plan_consumption() -> list[dict]:
+	"""Plan-wise consumption analysis."""
+	require_billing_admin()
+	out = {}
+	for lock in _active_locks():
+		p = out.setdefault(lock.plan or "—", {"plan": lock.plan or "—", "resources": 0, "monthly": 0.0})
+		p["resources"] += 1
+		p["monthly"] = frappe.utils.flt(p["monthly"] + frappe.utils.flt(lock.locked_rate), 2)
+	return sorted(out.values(), key=lambda r: r["monthly"], reverse=True)
+
+
+@frappe.whitelist()
+def get_conversion() -> dict:
+	"""Trial → paid conversion."""
+	require_billing_admin()
+	from press_billing.trials import entry_tier
+
+	entry = entry_tier()
+	tiers = frappe.get_all("Trust Tier", fields=["team", "tier", "promotion_basis"])
+	total = len(tiers)
+	trial = sum(1 for t in tiers if t.tier == entry)
+	paid = total - trial
+	converted = sum(1 for t in tiers if (t.promotion_basis or "").startswith("converted"))
+	return {"total_teams": total, "trial": trial, "paid": paid, "converted": converted,
+			"conversion_rate": round(paid / total, 3) if total else 0}
+
+
+@frappe.whitelist()
+def get_trial_costs_detail() -> dict:
+	"""Trial subsidy split: still-on-trial (unconverted) vs converted-to-paid."""
+	require_billing_admin()
+	from press_billing.trials import entry_tier
+
+	entry = entry_tier()
+	unconverted, converted = 0.0, 0.0
+	for inv in frappe.get_all("Invoice", filters={"invoice_type": "cost_report"}, fields=["team", "subtotal"]):
+		tier = frappe.db.get_value("Trust Tier", inv.team, "tier")
+		if tier == entry:
+			unconverted += frappe.utils.flt(inv.subtotal)
+		else:
+			converted += frappe.utils.flt(inv.subtotal)
+	return {"unconverted_subsidy": frappe.utils.flt(unconverted, 2),
+			"converted_cost": frappe.utils.flt(converted, 2),
+			"total": frappe.utils.flt(unconverted + converted, 2)}

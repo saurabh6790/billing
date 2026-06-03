@@ -136,6 +136,14 @@ class StripeAdapter(GatewayAdapter):
 		intent = stripe.PaymentIntent.retrieve(gateway_txn_id)
 		return intent.get("status")
 
+	def create_order(self, amount, currency: str, receipt: str, notes: dict | None = None) -> dict:
+		"""A PaymentIntent the UI confirms with Stripe.js for a wallet top-up."""
+		self._configure()
+		intent = stripe.PaymentIntent.create(amount=int(round((amount or 0) * 100)),
+			currency=(currency or "usd").lower(), metadata={"receipt": receipt, **(notes or {})})
+		return {"client_secret": intent.get("client_secret"), "payment_intent_id": intent.get("id"),
+				"amount": intent.get("amount")}
+
 	def create_customer(self, team) -> str:
 		self._configure()
 		customer = stripe.Customer.create(

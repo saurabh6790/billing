@@ -26,6 +26,7 @@ PAYPAL_GW = "GW-Demo-PayPal"
 def seed_all() -> dict:
 	from press_billing.dashboard import ensure_billing_team_field
 
+	clean_test_teams()  # drop test-leftover team-* data so only demo teams show
 	demo.seed()  # happy-path `demo` team + catalog + gateways + tier levels + workspace
 	_extra_gateways()
 	_ensure_signing_key()
@@ -301,3 +302,21 @@ def _wipe_team(team):
 	for dt in ("Credit Wallet", "Trust Tier", "Tax Profile", "Billing Profile"):
 		if frappe.db.exists(dt, team):
 			frappe.delete_doc(dt, team, force=True)
+
+
+def clean_test_teams():
+	"""Remove test-leftover team data (team-*) so only the demo teams show."""
+	for dt in ("Invoice", "Payment Attempt", "Refund", "Payment Method", "Price Lock",
+			   "Usage Rollup", "Credit Ledger Entry", "Subscription", "Subscription Change",
+			   "Notification Log", "Entitlement Token", "Credit Wallet", "Trust Tier",
+			   "Tax Profile", "Billing Profile"):
+		try:
+			if dt == "Subscription Change":
+				subs = frappe.get_all("Subscription", filters=[["team", "like", "team%"]], pluck="name")
+				if subs:
+					frappe.db.delete("Subscription Change", {"subscription": ["in", subs]})
+			else:
+				frappe.db.delete(dt, {"team": ["like", "team%"]})
+		except Exception:  # noqa: BLE001
+			pass
+	frappe.db.commit()

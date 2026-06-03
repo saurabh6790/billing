@@ -152,6 +152,17 @@ class RazorpayAdapter(GatewayAdapter):
 	def get_transaction_status(self, gateway_txn_id: str) -> str:
 		return self._client().payment.fetch(gateway_txn_id).get("status")
 
+	def create_order(self, amount, currency: str, receipt: str, notes: dict | None = None) -> dict:
+		"""A one-time Razorpay order for a wallet top-up; the UI opens Checkout against it."""
+		order = self._client().order.create({
+			"amount": int(round((amount or 0) * 100)),
+			"currency": (currency or "INR").upper(),
+			"receipt": receipt,
+			"notes": notes or {},
+		})
+		return {"order_id": order.get("id"), "key_id": self.gateway.get_password("api_key"),
+				"amount": order.get("amount"), "currency": (currency or "INR").upper()}
+
 	def create_customer(self, team) -> str:
 		customer = self._client().customer.create(
 			{

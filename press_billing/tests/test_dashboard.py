@@ -166,3 +166,37 @@ class TestCustomerActions(CustomerDataBase):
 		subscriptions.create_subscription(team=TEAM, cluster=CLUSTER, plan=PLAN, billing_cycle="monthly")
 		invoices = dashboard.list_invoices()  # no team arg, as admin
 		self.assertIsInstance(invoices, list)
+
+
+class TestGatewayTopUp(CustomerDataBase):
+	def test_topup_goes_through_gateway_and_verifies(self):
+		from unittest.mock import MagicMock, patch
+		from press_billing.tests.test_razorpay_adapter import make_razorpay_gateway
+
+		gw = make_razorpay_gateway("GW-Cust-RZP").name
+		adapter = MagicMock()
+		adapter.create_order.return_value = {"order_id": "order_x", "key_id": "rzp_test", "amount": 500000}
+		adapter.verify_payment_signature.return_value = True
+		with patch("press_billing.gateways.registry.get_adapter", return_value=adapter):
+			order = dashboard.create_topup_order(team=TEAM, amount=5000, gateway=gw)
+			self.assertEqual(order["order_id"], "order_x")  # a real gateway order was created
+			adapter.create_order.assert_called_once()
+			# Wallet is NOT credited yet — only after the gateway confirms.
+			self.assertEqual(dashboard.get_credit_balance(TEAM)["balance"], 0)
+
+			out = dashboard.confirm_topup(team=TEAM, amount=5000, gateway=gw,
+				razorpay_order_id="order_x", razorpay_payment_id="pay_x", razorpay_signature="sig")
+			adapter.verify_payment_signature.assert_called_once()
+			self.assertEqual(out["new_balance"], 5000)
+
+	def test_topup_rejects_bad_signature(self):
+		from unittest.mock import MagicMock, patch
+		from press_billing.tests.test_razorpay_adapter import make_razorpay_gateway
+
+		gw = make_razorpay_gateway("GW-Cust-RZP2").name
+		adapter = MagicMock(); adapter.verify_payment_signature.return_value = False
+		with patch("press_billing.gateways.registry.get_adapter", return_value=adapter):
+			with self.assertRaises(frappe.ValidationError):
+				dashboard.confirm_topup(team=TEAM, amount=5000, gateway=gw,
+					razorpay_order_id="o", razorpay_payment_id="p", razorpay_signature="bad")
+		self.assertEqual(dashboard.get_credit_balance(TEAM)["balance"], 0)  # no magic credit

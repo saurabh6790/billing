@@ -100,6 +100,11 @@ class GatewayAdapter(ABC):
 	# --- optional, gateway-specific capabilities ----------------------------
 	# Default: unsupported. Implemented only where the gateway has the concept.
 
+	def create_order(self, amount, currency: str, receipt: str, notes: dict | None = None) -> dict:
+		"""Create a one-time checkout order/intent the client UI completes (top-up).
+		Returns the client-side handles (order_id + key / client_secret)."""
+		raise GatewayUnsupported(f"{type(self).__name__} does not support create_order")
+
 	def create_customer(self, team) -> str:
 		raise GatewayUnsupported(f"{type(self).__name__} does not support create_customer")
 
