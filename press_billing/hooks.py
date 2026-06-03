@@ -88,6 +88,9 @@ app_license = "mit"
 # before_install = "press_billing.install.before_install"
 # after_install = "press_billing.install.after_install"
 
+# Ensure the Billing Admin / Billing User roles exist (#22).
+after_migrate = "press_billing.security.ensure_billing_roles"
+
 # Uninstallation
 # ------------
 
