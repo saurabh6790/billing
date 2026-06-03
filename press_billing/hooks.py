@@ -148,6 +148,7 @@ scheduler_events = {
 	# retries whose backoff window has elapsed.
 	"daily": [
 		"press_billing.dunning.run_dunning",
+		"press_billing.reconciliation.run_reconciliation",
 	],
 	"hourly": [
 		"press_billing.erpnext_sync.retry_failed_syncs",

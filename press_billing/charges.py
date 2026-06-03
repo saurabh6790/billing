@@ -153,6 +153,7 @@ def apply_webhook(event_name: str) -> dict:
 	settled = _settle_invoice(attempt)
 	attempt.status = "captured"
 	attempt.completed_at = frappe.utils.now_datetime()
+	attempt.resolved_by = "webhook"
 	attempt.save(ignore_permissions=True)
 	_mark_event(event, "processed")
 	return {"handled": True, "result": "paid", "invoice": attempt.invoice, "settled": settled}

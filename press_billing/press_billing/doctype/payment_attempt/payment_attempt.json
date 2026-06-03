@@ -20,6 +20,7 @@
   "section_break_result",
   "status",
   "gateway_transaction_id",
+  "resolved_by",
   "column_break_result",
   "initiated_at",
   "completed_at",
@@ -98,6 +99,13 @@
    "fieldname": "gateway_transaction_id",
    "fieldtype": "Data",
    "label": "Gateway Transaction ID"
+  },
+  {
+   "fieldname": "resolved_by",
+   "fieldtype": "Select",
+   "label": "Resolved By",
+   "options": "\nwebhook\nreconciliation",
+   "description": "How the terminal state was reached — audit provenance (#21)"
   },
   {
    "fieldname": "column_break_result",
