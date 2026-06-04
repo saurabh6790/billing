@@ -5,7 +5,7 @@
         <div class="flex flex-wrap gap-x-8 gap-y-1 text-sm">
           <span class="text-ink-gray-6">Period: <span class="text-ink-gray-9">{{ inv.data.period_start }} → {{ inv.data.period_end }}</span></span>
           <span class="text-ink-gray-6">Status: <Badge variant="subtle" :theme="statusTheme(inv.data.status)" :label="inv.data.status" /></span>
-          <span class="text-ink-gray-6">Type: <span class="text-ink-gray-9">{{ inv.data.invoice_type }}</span></span>
+          <span class="text-ink-gray-6">Type: <span class="text-ink-gray-9">{{ invoiceTypeLabel(inv.data.invoice_type) }}</span></span>
         </div>
 
         <table class="w-full text-sm">
@@ -51,7 +51,7 @@
 <script setup>
 import { computed, watch } from 'vue';
 import { Dialog, Badge, Spinner, createResource } from 'frappe-ui';
-import { money, statusTheme } from '../utils';
+import { money, statusTheme, invoiceTypeLabel } from '../utils';
 const props = defineProps({ modelValue: Boolean, name: String });
 const emit = defineEmits(['update:modelValue']);
 const show = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });

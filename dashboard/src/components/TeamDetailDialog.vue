@@ -14,9 +14,11 @@
             <tbody>
               <tr v-for="(r, i) in d.data[sec.key]" :key="i" class="border-b border-outline-gray-1">
                 <td v-for="f in sec.fields" :key="f" class="py-2 pr-4 text-ink-gray-8">
-                  <Badge v-if="f === 'status' || f === 'account_standing'" variant="subtle" :theme="badge(r[f])" :label="r[f]" />
+                  <Badge v-if="f === 'account_standing'" variant="subtle" :theme="standingTheme(r[f])" :label="titleCase(r[f])" />
+                  <Badge v-else-if="f === 'status' && sec.key === 'payment_attempts'" variant="subtle" :theme="attemptTheme(r[f])" :label="attemptLabel(r[f])" />
+                  <Badge v-else-if="f === 'status'" variant="subtle" :theme="statusTheme(r[f])" :label="r[f]" />
                   <span v-else-if="f === 'total' || f === 'amount'">{{ money(r[f]) }}</span>
-                  <span v-else>{{ r[f] }}</span>
+                  <span v-else>{{ r[f] || '—' }}</span>
                 </td>
               </tr>
               <tr v-if="!d.data[sec.key]?.length"><td :colspan="sec.cols.length" class="py-2 text-ink-gray-5">None.</td></tr>
@@ -31,16 +33,15 @@
 <script setup>
 import { computed, watch } from 'vue';
 import { Dialog, Badge, Spinner, createResource } from 'frappe-ui';
-import { money, standingTheme, statusTheme } from '../utils';
+import { money, standingTheme, statusTheme, titleCase, attemptTheme, attemptLabel } from '../utils';
 const props = defineProps({ modelValue: Boolean, data: Object });
 const emit = defineEmits(['update:modelValue']);
 const show = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });
 const d = createResource({ url: 'press_billing.admin.get_team_billing' });
 watch(() => props.data, (t) => { if (t?.team) d.submit({ team: t.team }); });
-const badge = (v) => (['Paid', 'Open', 'Overdue', 'Draft'].includes(v) ? statusTheme(v) : standingTheme(v));
 const sections = [
-  { title: 'Subscriptions', key: 'subscriptions', cols: ['Plan', 'Cluster', 'Standing'], fields: ['plan', 'cluster', 'account_standing'] },
-  { title: 'Invoices', key: 'invoices', cols: ['Invoice', 'Status', 'Total', 'Period end'], fields: ['name', 'status', 'total', 'period_end'] },
-  { title: 'Payment attempts', key: 'payment_attempts', cols: ['Attempt', 'Status', 'Amount', 'Resolved by'], fields: ['name', 'status', 'amount', 'resolved_by'] },
+  { title: 'Subscriptions', key: 'subscriptions', cols: ['Plan', 'Cluster', 'Status'], fields: ['plan', 'cluster', 'account_standing'] },
+  { title: 'Invoices', key: 'invoices', cols: ['Invoice', 'Status', 'Total', 'Period End'], fields: ['name', 'status', 'total', 'period_end'] },
+  { title: 'Payment Attempts', key: 'payment_attempts', cols: ['Attempt', 'Status', 'Amount', 'Resolved By'], fields: ['name', 'status', 'amount', 'resolved_by'] },
 ];
 </script>

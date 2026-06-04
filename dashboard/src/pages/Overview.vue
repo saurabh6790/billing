@@ -3,8 +3,8 @@
     <!-- trust tier + standing -->
     <div class="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
       <span class="text-ink-gray-6">Trust tier: <span class="font-medium text-ink-gray-9">{{ ov.data?.tier || '—' }}</span></span>
-      <span class="text-ink-gray-6">Cap: <span class="font-medium text-ink-gray-9">{{ money(ov.data?.max_spend) }}/mo</span></span>
-      <span class="text-ink-gray-6">Standing: <Badge variant="subtle" :theme="standingTheme(ov.data?.standing)" :label="titleCase(ov.data?.standing)" /></span>
+      <span class="text-ink-gray-6">Cap: <span class="font-medium text-ink-gray-9">{{ money(ov.data?.max_spend, ov.data?.currency) }}/mo</span></span>
+      <span class="text-ink-gray-6">Status: <Badge variant="subtle" :theme="standingTheme(ov.data?.standing)" :label="titleCase(ov.data?.standing)" /></span>
       <span class="text-ink-gray-6">Instances: <span class="font-medium text-ink-gray-9">{{ ov.data?.resources ?? 0 }}</span> across <span class="font-medium text-ink-gray-9">{{ ov.data?.clusters ?? 0 }}</span> region(s)</span>
       <span class="text-ink-gray-6">Billing currency: <span class="font-medium text-ink-gray-9">{{ ov.data?.currency || 'INR' }}</span></span>
     </div>
