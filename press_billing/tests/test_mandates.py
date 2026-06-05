@@ -171,3 +171,87 @@ class TestMandateCancel(MandateTestBase):
 			frappe.db.get_value("Payment Method", result["payment_method"], "status"),
 			"cancelled",
 		)
+
+
+class TestUpiRecurringLimit(MandateTestBase):
+	"""UPI Autopay is blocked above the Rs. 1,00,000 recurring limit (#08/#28)."""
+
+	def setUp(self):
+		super().setUp()
+		frappe.db.delete("Invoice", {"team": TEAM})
+
+	def _invoice(self, total):
+		return frappe.get_doc(
+			{
+				"doctype": "Invoice", "team": TEAM, "invoice_type": "billable", "status": "Open",
+				"period_start": "2026-05-01", "period_end": "2026-05-31", "currency": "INR",
+				"subtotal": total, "total": total, "expected_collection": total, "amount_paid": 0,
+			}
+		).insert(ignore_permissions=True)
+
+	def test_eligible_below_limit(self):
+		self.assertTrue(mandates.upi_eligibility(TEAM)["eligible"])  # t0 cap = 100
+
+	def test_blocked_when_cap_at_limit(self):
+		frappe.db.set_value("Trust Tier", TEAM, "max_spend", mandates.UPI_RECURRING_MAX)
+		elig = mandates.upi_eligibility(TEAM)
+		self.assertFalse(elig["eligible"])
+		self.assertIn("cap", elig["reason"].lower())
+		with stub_adapter():
+			with self.assertRaises(frappe.ValidationError):
+				mandates.setup_mandate(TEAM, GATEWAY)
+
+	def test_blocked_when_last_invoice_at_limit(self):
+		self._invoice(mandates.UPI_RECURRING_MAX)
+		elig = mandates.upi_eligibility(TEAM)
+		self.assertFalse(elig["eligible"])
+		self.assertIn("invoice", elig["reason"].lower())
+
+
+class TestRazorpayCardSetup(MandateTestBase):
+	def test_setup_card_creates_card_method_without_upi_limit(self):
+		with stub_adapter() as adapter:
+			result = mandates.setup_card(TEAM, GATEWAY, customer_id="cust_x")
+
+		# Adapter asked for the card rail, not UPI.
+		self.assertEqual(adapter.setup_payment_method.call_args.args[1]["method"], "card")
+		method = frappe.get_doc("Payment Method", result["payment_method"])
+		self.assertEqual(method.method_type, "card")
+		self.assertEqual(method.status, "pending_validation")
+
+	def test_card_setup_works_even_when_upi_is_blocked(self):
+		frappe.db.set_value("Trust Tier", TEAM, "max_spend", mandates.UPI_RECURRING_MAX)
+		with stub_adapter():
+			result = mandates.setup_card(TEAM, GATEWAY)  # no exception
+		self.assertEqual(
+			frappe.db.get_value("Payment Method", result["payment_method"], "method_type"), "card"
+		)
+
+
+class TestAddMethodGatewayResolution(IntegrationTestCase):
+	"""Adding a method resolves to the right gateway per currency (#29): Razorpay
+	for INR (so UPI is offered) even when a Stripe-INR gateway is the currency
+	default; Stripe for currencies with no Razorpay."""
+
+	def _gw(self, name, adapter, currency, default=0):
+		if frappe.db.exists("Payment Gateway", name):
+			frappe.delete_doc("Payment Gateway", name, force=True)
+		frappe.get_doc({
+			"doctype": "Payment Gateway", "__newname": name, "title": name,
+			"adapter_key": adapter, "currency": currency, "api_key": "k", "api_secret": "s",
+			"webhook_secret": "w", "is_enabled": 1, "is_default_for_currency": default,
+			"supports_mandates": 1 if adapter == "razorpay" else 0,
+		}).insert(ignore_permissions=True)
+
+	def test_razorpay_wins_over_default_stripe_for_inr(self):
+		from press_billing import dashboard
+
+		self._gw("GW-Res-Stripe-INR", "stripe", "INR", default=1)
+		self._gw("GW-Res-RZP-INR", "razorpay", "INR", default=0)
+		self.assertEqual(dashboard._add_method_gateway("INR").adapter_key, "razorpay")
+
+	def test_stripe_when_no_razorpay_for_currency(self):
+		from press_billing import dashboard
+
+		self._gw("GW-Res-Stripe-EUR", "stripe", "EUR", default=1)
+		self.assertEqual(dashboard._add_method_gateway("EUR").adapter_key, "stripe")

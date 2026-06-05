@@ -15,9 +15,15 @@ function loadScript(src) {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) return resolve(true);
     const s = document.createElement('script');
-    s.src = src; s.onload = () => resolve(true); s.onerror = () => reject(new Error('Could not load Razorpay Checkout'));
+    s.src = src; s.onload = () => resolve(true); s.onerror = () => reject(new Error(`Could not load ${src}`));
     document.head.appendChild(s);
   });
+}
+
+// Loads Stripe.js and returns a Stripe instance for the gateway's publishable key.
+export async function loadStripeJs(publishableKey) {
+  await loadScript('https://js.stripe.com/v3/');
+  return window.Stripe(publishableKey);
 }
 
 // Opens the real Razorpay Checkout modal against a server-created order.

@@ -42,20 +42,24 @@ class RazorpayAdapter(GatewayAdapter):
 		)
 
 	def setup_payment_method(self, team, setup_data: dict) -> dict:
-		"""Create a UPI Autopay mandate authorisation order.
+		"""Create a recurring authorisation order — UPI Autopay or card.
 
-		The ceiling (`max_amount`) becomes the mandate token's max; the UI runs
-		Razorpay Checkout against the returned order to capture the token.
+		`method` selects the rail ("upi" default, or "card"); `max_amount` becomes
+		the token's ceiling. The UI runs Razorpay Checkout against the returned
+		order to capture the recurring token. The recurring `charge()` path is the
+		same for both rails (it charges the token).
 		"""
 		client = self._client()
+		method = setup_data.get("method") or "upi"
 		max_amount = int(setup_data.get("max_amount") or 0)
+		receipt = "Authorize UPI Autopay" if method == "upi" else "Authorize card mandate"
 		order = client.order.create(
 			{
 				"amount": 100,
 				"currency": "INR",
-				"method": "upi",
+				"method": method,
 				"customer_id": setup_data.get("customer_id"),
-				"receipt": "Authorize UPI Autopay",
+				"receipt": receipt,
 				"token": {"max_amount": max_amount * 100},
 				"notes": {"team": team},
 			}

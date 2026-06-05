@@ -445,14 +445,65 @@ def confirm_topup(team=None, amount=None, gateway=None, razorpay_order_id=None,
 		reference_name=reference, note=f"Wallet top-up ({reference})")
 
 
+def _add_method_gateway(currency: str):
+	"""Gateway to add a payment method in this currency.
+
+	A Razorpay gateway (if one exists for the currency) wins, because only
+	Razorpay carries UPI Autopay — picking by *adapter* not by
+	`is_default_for_currency`, since the demo flags a Stripe-INR gateway as the
+	INR default which must not hide UPI. Otherwise the currency's gateway
+	(Stripe = card only)."""
+	rzp = frappe.db.get_value(
+		"Payment Gateway",
+		{"currency": currency, "adapter_key": "razorpay", "is_enabled": 1},
+		["name", "adapter_key"], as_dict=True, order_by="is_default_for_currency desc",
+	)
+	if rzp:
+		return rzp
+	return frappe.db.get_value(
+		"Payment Gateway", {"currency": currency, "is_enabled": 1},
+		["name", "adapter_key"], as_dict=True, order_by="is_default_for_currency desc",
+	) or frappe._dict()
+
+
 @frappe.whitelist()
-def setup_payment_method_order(team=None, gateway=None) -> dict:
-	"""Begin adding a Razorpay UPI Autopay mandate (ceiling = trust-tier cap).
-	Returns the order handles the UI runs Razorpay Checkout against (#08)."""
+def get_payment_method_options(team=None) -> dict:
+	"""What the team can set up, resolved from their billing currency: card + UPI
+	on Razorpay (INR), card-only on Stripe (USD/EUR). UPI is gated by the
+	₹1,00,000 recurring limit."""
 	team = _resolve_team(team)
-	gw = gateway or frappe.db.get_value("Payment Gateway", {"adapter_key": "razorpay", "is_enabled": 1}, "name")
+	currency = _team_currency(team)
+	gw = _add_method_gateway(currency)
+
+	if gw.get("adapter_key") == "razorpay":
+		from press_billing import mandates
+
+		elig = mandates.upi_eligibility(team)
+		return {"gateway": gw.name, "adapter_key": "razorpay", "currency": currency,
+				"methods": ["card", "upi_autopay"], "allow_upi": elig["eligible"],
+				"upi_block_reason": elig["reason"], "upi_limit": elig["limit"]}
+
+	publishable_key = None
+	if gw.get("adapter_key") == "stripe":
+		from press_billing.gateways.registry import get_adapter
+
+		publishable_key = get_adapter(frappe.get_doc("Payment Gateway", gw.name)).get_credential("api_key")
+	return {"gateway": gw.get("name"), "adapter_key": gw.get("adapter_key"), "currency": currency,
+			"methods": ["card"], "allow_upi": False, "upi_block_reason": None, "upi_limit": None,
+			"publishable_key": publishable_key}
+
+
+@frappe.whitelist()
+def setup_payment_method_order(team=None, gateway=None, method_type="upi_autopay") -> dict:
+	"""Begin adding a Razorpay recurring method — UPI Autopay mandate (ceiling =
+	trust-tier cap) or a card token. Returns the order handles the UI runs
+	Razorpay Checkout against (#08)."""
+	team = _resolve_team(team)
+	gw = gateway or _add_method_gateway(_team_currency(team)).get("name")
 	from press_billing import mandates
 
+	if method_type == "card":
+		return mandates.setup_card(team, gw)
 	return mandates.setup_mandate(team, gw)
 
 
