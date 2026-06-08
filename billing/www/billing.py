@@ -19,6 +19,10 @@ def get_context(context):
 	context.no_breadcrumbs = True
 	context.css_files = []
 	context.js_files = []
+	# Surface the realtime endpoint so the SPA's socket client targets the
+	# configured port (e.g. 9010) instead of frappe-ui's 9000 default.
+	context.site_name = frappe.local.site
+	context.socketio_port = frappe.conf.socketio_port
 	index = os.path.join(
 		frappe.get_app_path("billing"), "public", "dashboard", "index.html"
 	)

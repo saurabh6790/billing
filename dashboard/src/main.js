@@ -11,5 +11,7 @@ setConfig('resourceFetcher', frappeRequest);
 const app = createApp(App);
 app.use(createPinia());
 app.use(router);
-app.use(FrappeUI);
+// Point the realtime client at the site's configured socketio port (injected
+// by the www/billing.html shell); frappe-ui otherwise defaults to 9000.
+app.use(FrappeUI, { socketio: { port: window.socketio_port } });
 app.mount('#app');
