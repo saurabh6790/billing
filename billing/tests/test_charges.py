@@ -200,6 +200,37 @@ class TestChargeInvoice(ChargeTestBase):
 		charges.apply_webhook(event)
 		self.assertEqual(frappe.db.get_value("Invoice", inv, "status"), "Open")
 
+	def test_authorised_webhook_advances_attempt_without_paying(self):
+		inv = self._open_invoice(1000)
+		# An authorise-only charge: the sync response holds funds, attempt initiated.
+		with stub_adapter(success=False, txn_id="pi_auth") as adapter:
+			adapter.charge.return_value = PaymentResult(
+				success=False, status="authorised", gateway_transaction_id="pi_auth",
+				failure_code=None, failure_reason=None,
+			)
+			attempt_name = charges.pay_invoice(inv)["attempt"]
+		# Manually leave the attempt at initiated (charge didn't capture).
+		frappe.db.set_value("Payment Attempt", attempt_name, {"status": "initiated", "gateway_transaction_id": "pi_auth"})
+
+		event = self._stripe_event("evt_auth", "payment_intent.amount_capturable_updated", "pi_auth")
+		out = charges.apply_webhook(event)
+
+		self.assertEqual(out["result"], "authorised")
+		self.assertEqual(frappe.db.get_value("Payment Attempt", attempt_name, "status"), "authorised")
+		# Funds only held — invoice not settled.
+		self.assertEqual(frappe.db.get_value("Invoice", inv, "status"), "Open")
+
+	def test_authorised_webhook_never_walks_back_a_captured_attempt(self):
+		inv = self._open_invoice(1000)
+		with stub_adapter(success=True, txn_id="pi_race"):
+			attempt_name = charges.pay_invoice(inv)["attempt"]
+		# Capture lands first.
+		charges.apply_webhook(self._stripe_event("evt_cap", "payment_intent.succeeded", "pi_race"))
+		# A late authorise webhook for the same txn must not regress it.
+		charges.apply_webhook(self._stripe_event("evt_late", "payment_intent.amount_capturable_updated", "pi_race"))
+		self.assertEqual(frappe.db.get_value("Payment Attempt", attempt_name, "status"), "captured")
+		self.assertEqual(frappe.db.get_value("Invoice", inv, "status"), "Paid")
+
 
 class TestConcurrentPay(ChargeTestBase):
 	def test_concurrent_pay_invoice_makes_one_captured_attempt(self):
@@ -243,3 +274,62 @@ class TestFullStripeCycle(ChargeTestBase):
 		invoice = frappe.get_doc("Invoice", inv)
 		self.assertEqual(invoice.status, "Paid")
 		self.assertEqual(invoice.amount_paid, 1000.0)
+
+
+class TestLogRetention(ChargeTestBase):
+	"""3-month rolling prune of Payment Attempt + Webhook Event logs."""
+
+	def _attempt(self, invoice, status):
+		return frappe.get_doc(
+			{
+				"doctype": "Payment Attempt", "invoice": invoice, "team": TEAM,
+				"gateway": GATEWAY, "amount": 1000, "currency": "INR", "status": status,
+				"initiated_at": frappe.utils.now_datetime(),
+			}
+		).insert(ignore_permissions=True).name
+
+	def _paid_invoice(self):
+		inv = self._open_invoice(1000)
+		frappe.db.set_value("Invoice", inv, "status", "Paid")
+		return inv
+
+	def _far_future(self):
+		# Push 'now' past the retention window so every just-created row is old enough.
+		return frappe.utils.add_to_date(frappe.utils.now_datetime(), days=200)
+
+	def test_prunes_terminal_attempt_on_settled_invoice(self):
+		captured = self._attempt(self._paid_invoice(), "captured")
+		out = charges.cleanup_payment_logs(now=self._far_future())
+		self.assertGreaterEqual(out["payment_attempts"], 1)
+		self.assertFalse(frappe.db.exists("Payment Attempt", captured))
+
+	def test_keeps_attempt_on_unsettled_invoice(self):
+		live = self._attempt(self._open_invoice(1000), "failed")  # invoice still Open
+		charges.cleanup_payment_logs(now=self._far_future())
+		self.assertTrue(frappe.db.exists("Payment Attempt", live))
+
+	def test_keeps_non_terminal_attempt(self):
+		initiated = self._attempt(self._paid_invoice(), "initiated")
+		charges.cleanup_payment_logs(now=self._far_future())
+		self.assertTrue(frappe.db.exists("Payment Attempt", initiated))
+
+	def test_keeps_attempt_referenced_by_refund(self):
+		refunded = self._attempt(self._paid_invoice(), "refunded")
+		frappe.get_doc({"doctype": "Refund", "payment_attempt": refunded}).insert(ignore_permissions=True)
+		charges.cleanup_payment_logs(now=self._far_future())
+		self.assertTrue(frappe.db.exists("Payment Attempt", refunded))
+
+	def test_prunes_processed_event_keeps_unhandled(self):
+		processed = self._stripe_event("evt_old_done", "payment_intent.succeeded", "pi_x")
+		frappe.db.set_value("Webhook Event", processed, "status", "processed")
+		pending = self._stripe_event("evt_old_recv", "payment_intent.succeeded", "pi_y")  # still received
+		charges.cleanup_payment_logs(now=self._far_future())
+		self.assertFalse(frappe.db.exists("Webhook Event", processed))
+		self.assertTrue(frappe.db.exists("Webhook Event", pending))
+
+	def test_respects_config_window(self):
+		captured = self._attempt(self._paid_invoice(), "captured")
+		# Wide window (1 year) with 'now' = real now: a fresh row is NOT old enough.
+		with patch.dict(frappe.conf, {"payment_log_retention_days": 365}):
+			charges.cleanup_payment_logs()
+		self.assertTrue(frappe.db.exists("Payment Attempt", captured))

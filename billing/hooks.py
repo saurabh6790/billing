@@ -161,6 +161,8 @@ scheduler_events = {
 	"daily": [
 		"billing.dunning.run_dunning",
 		"billing.reconciliation.run_reconciliation",
+		# Prune Payment Attempt + Webhook Event logs past the 3-month window.
+		"billing.charges.cleanup_payment_logs",
 	],
 	"hourly": [
 		"billing.erpnext_sync.retry_failed_syncs",

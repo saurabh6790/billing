@@ -17,9 +17,24 @@ from billing.gateways.base import GatewayTimeout
 # An attempt occupying the invoice — a second charge must not start beside it.
 _IN_FLIGHT = ("initiated", "authorised", "captured")
 
-# Gateway event types that settle / fail a charge.
+# Gateway event types the Payment Attempt listens to. An attempt's status is
+# advanced ONLY by the respective callback for its transaction:
+#   initiated -> authorised -> captured / failed
+# `authorised` (funds held, not yet captured) moves no money and leaves the
+# invoice Open; `captured` is the only event that settles it to Paid.
+_AUTHORISED_EVENTS = {
+	"payment_intent.amount_capturable_updated",  # Stripe: requires_capture
+	"payment.authorized",  # Razorpay
+	"charge.authorized",
+}
 _SUCCESS_EVENTS = {"payment_intent.succeeded", "charge.succeeded", "payment.captured"}
 _FAILURE_EVENTS = {"payment_intent.payment_failed", "charge.failed", "payment.failed"}
+
+# Logs (Payment Attempt + Webhook Event) are kept on a rolling window and pruned
+# daily; site-config `payment_log_retention_days` overrides the default.
+LOG_RETENTION_DEFAULT_DAYS = 90  # ~3 months
+_TERMINAL_ATTEMPT = ("captured", "failed", "refunded")
+_UNSETTLED_INVOICE = ("Open", "Overdue")
 
 
 def _adapter_for(gateway: str):
@@ -64,6 +79,7 @@ def pay_invoice(invoice: str, payment_method: str | None = None, gateway: str | 
 			"amount": inv.expected_collection,
 			"currency": inv.currency,
 			"status": "initiated",
+			"initiated_at": frappe.utils.now_datetime(),
 			"retry_number": frappe.db.count("Payment Attempt", {"invoice": invoice}),
 		}
 	).insert(ignore_permissions=True)
@@ -122,10 +138,11 @@ def apply_webhook(event_name: str) -> dict:
 	payload = frappe.parse_json(event.raw_payload) if event.raw_payload else {}
 
 	txn_id = _extract_transaction_id(adapter_key, payload)
+	is_authorised = event.event_type in _AUTHORISED_EVENTS
 	is_success = event.event_type in _SUCCESS_EVENTS
 	is_failure = event.event_type in _FAILURE_EVENTS
 
-	if not txn_id or not (is_success or is_failure):
+	if not txn_id or not (is_authorised or is_success or is_failure):
 		_mark_event(event, "ignored")
 		return {"handled": False, "reason": "not_a_charge_event"}
 
@@ -135,6 +152,15 @@ def apply_webhook(event_name: str) -> dict:
 		return {"handled": False, "reason": "no_matching_attempt"}
 
 	attempt = frappe.get_doc("Payment Attempt", attempt_name)
+	if is_authorised:
+		# Funds held, capture pending. Advance only from initiated — never walk a
+		# terminal attempt backwards if the capture/fail webhook arrived first.
+		if attempt.status == "initiated":
+			attempt.status = "authorised"
+			attempt.save(ignore_permissions=True)
+		_mark_event(event, "processed")
+		return {"handled": True, "result": "authorised", "attempt": attempt_name}
+
 	if is_failure:
 		fell_back = None
 		# A failure matters only until the invoice is settled — never undo a Paid
@@ -193,6 +219,64 @@ def _settle_invoice(attempt) -> bool:
 
 	enqueue_invoice_sync(inv.name)
 	return True
+
+
+# --- log retention ----------------------------------------------------------
+
+
+def cleanup_payment_logs(now=None) -> dict:
+	"""Daily: prune Payment Attempt + Webhook Event logs past the retention window.
+
+	These are high-volume append-only logs (one row per charge / per inbound
+	callback). They are kept on a rolling window — site-config
+	`payment_log_retention_days`, default 90 (~3 months) — and older rows are
+	dropped. Statutory amounts live on the Invoice / ERPNext Sales Invoice (the
+	SOR), so pruning the gateway log loses no money trail.
+
+	A *live* record is never pruned: a non-terminal attempt (initiated/
+	authorised), an attempt on an unsettled invoice (Open/Overdue), or one
+	referenced by a Refund is kept regardless of age.
+	"""
+	days = int(frappe.conf.get("payment_log_retention_days") or LOG_RETENTION_DEFAULT_DAYS)
+	cutoff = frappe.utils.add_to_date(now or frappe.utils.now_datetime(), days=-days)
+
+	attempts = _prune_payment_attempts(cutoff)
+	events = _prune_webhook_events(cutoff)
+	return {"cutoff": str(cutoff), "payment_attempts": attempts, "webhook_events": events}
+
+
+def _prune_payment_attempts(cutoff) -> int:
+	"""Delete terminal attempts older than cutoff, keeping any the audit chain or
+	an open invoice still needs."""
+	# Attempts referenced by a Refund anchor the refund audit chain — never drop.
+	keep = set(frappe.get_all("Refund", pluck="payment_attempt") or [])
+	candidates = frappe.get_all(
+		"Payment Attempt",
+		filters={"status": ["in", _TERMINAL_ATTEMPT], "creation": ["<", cutoff]},
+		fields=["name", "invoice"],
+	)
+	deleted = 0
+	for a in candidates:
+		if a.name in keep:
+			continue
+		if frappe.db.get_value("Invoice", a.invoice, "status") in _UNSETTLED_INVOICE:
+			continue
+		frappe.delete_doc("Payment Attempt", a.name, ignore_permissions=True, force=True, delete_permanently=True)
+		deleted += 1
+	return deleted
+
+
+def _prune_webhook_events(cutoff) -> int:
+	"""Delete processed/ignored Webhook Event rows older than cutoff. Keep any not
+	yet handled (received/failed) so a stuck event stays visible for triage."""
+	stale = frappe.get_all(
+		"Webhook Event",
+		filters={"status": ["in", ("processed", "ignored")], "creation": ["<", cutoff]},
+		pluck="name",
+	)
+	for name in stale:
+		frappe.delete_doc("Webhook Event", name, ignore_permissions=True, force=True, delete_permanently=True)
+	return len(stale)
 
 
 def _extract_transaction_id(adapter_key: str, payload: dict):
