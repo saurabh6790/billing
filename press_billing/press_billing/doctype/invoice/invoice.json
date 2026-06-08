@@ -21,6 +21,8 @@
   "section_break_totals",
   "currency",
   "subtotal",
+  "commitment_discount",
+  "commitment_clawback",
   "output_tax_type",
   "output_tax_rate",
   "output_tax_amount",
@@ -119,6 +121,18 @@
    "label": "Subtotal"
   },
   {
+   "fieldname": "commitment_discount",
+   "fieldtype": "Currency",
+   "label": "Commitment Discount",
+   "description": "Discount applied to fixed-bundle lines under an active Commitment (issue #30); reduces the taxable base. 0 when no commitment or floor not met."
+  },
+  {
+   "fieldname": "commitment_clawback",
+   "fieldtype": "Currency",
+   "label": "Commitment Clawback",
+   "description": "Discount repaid when the team dropped below its Commitment floor before term-end (issue #31); added to the taxable base. 0 otherwise."
+  },
+  {
    "default": "none",
    "fieldname": "output_tax_type",
    "fieldtype": "Select",
@@ -144,7 +158,7 @@
    "fieldtype": "Select",
    "label": "Zero-Rating Reason",
    "options": "\nsez_lut\nexport",
-   "description": "Why output tax is 0 (compliance reason — never blank when zero-rated)"
+   "description": "Why output tax is 0 (compliance reason \u2014 never blank when zero-rated)"
   },
   {
    "fieldname": "total",
@@ -175,7 +189,7 @@
    "fieldname": "tds_amount",
    "fieldtype": "Currency",
    "label": "TDS Amount",
-   "description": "Withheld — reduces collected, NOT total. 0 at launch"
+   "description": "Withheld \u2014 reduces collected, NOT total. 0 at launch"
   },
   {
    "default": "0",

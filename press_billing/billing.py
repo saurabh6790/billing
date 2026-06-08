@@ -20,7 +20,7 @@ call in the common (push-primary) case.
 
 import frappe
 
-from press_billing import credits
+from press_billing import commitments, credits
 
 DEFAULT_DUE_DAYS = 7
 
@@ -133,11 +133,17 @@ def generate_draft_invoice(subscription: str, period_start, period_end):
 	from press_billing.tax import resolve_tax
 
 	subtotal = frappe.utils.flt(sum(line["amount"] for line in lines), 2)
+	# Commitment (#30 discount / #31 clawback) adjusts the taxable base; subtotal
+	# stays gross. Discount reduces it; a breach clawback adds the repaid discount.
+	commitment = commitments.resolve_commitment(sub.team, lines, period_start)
+	discount = commitment["discount"]
+	clawback = commitment["clawback"]
+	taxable_base = frappe.utils.flt(subtotal - discount + clawback, 2)
 	currency = frappe.db.get_value(
 		"Price Lock", {"team": sub.team, "cluster": sub.cluster}, "currency"
 	)
-	tax = resolve_tax(sub.team, subtotal)
-	total = frappe.utils.flt(subtotal + tax["output_tax_amount"], 2)
+	tax = resolve_tax(sub.team, taxable_base)
+	total = frappe.utils.flt(taxable_base + tax["output_tax_amount"], 2)
 	# expected_collection = total - tds (credits reduce it further at open).
 	expected = frappe.utils.flt(total - tax["tds_amount"], 2)
 
@@ -155,6 +161,8 @@ def generate_draft_invoice(subscription: str, period_start, period_end):
 			"currency": currency,
 			"items": lines,
 			"subtotal": subtotal,
+			"commitment_discount": discount,
+			"commitment_clawback": clawback,
 			"output_tax_type": tax["output_tax_type"],
 			"output_tax_rate": tax["output_tax_rate"],
 			"output_tax_amount": tax["output_tax_amount"],
@@ -168,6 +176,7 @@ def generate_draft_invoice(subscription: str, period_start, period_end):
 			"amount_paid": 0,
 		}
 	).insert(ignore_permissions=True)
+	commitments.mark_breached(commitment)
 	return invoice.name
 
 
@@ -208,9 +217,15 @@ def generate_team_invoice(team: str, period_start, period_end, subscription: str
 		return None
 
 	subtotal = frappe.utils.flt(sum(line["amount"] for line in lines), 2)
+	# Commitment (#30 discount / #31 clawback) adjusts the taxable base; subtotal
+	# stays gross. Discount reduces it; a breach clawback adds the repaid discount.
+	commitment = commitments.resolve_commitment(team, lines, period_start)
+	discount = commitment["discount"]
+	clawback = commitment["clawback"]
+	taxable_base = frappe.utils.flt(subtotal - discount + clawback, 2)
 	currency = frappe.db.get_value("Price Lock", {"team": team}, "currency")
-	tax = resolve_tax(team, subtotal)
-	total = frappe.utils.flt(subtotal + tax["output_tax_amount"], 2)
+	tax = resolve_tax(team, taxable_base)
+	total = frappe.utils.flt(taxable_base + tax["output_tax_amount"], 2)
 	expected = frappe.utils.flt(total - tax["tds_amount"], 2)
 	if subscription is None:
 		subscription = frappe.db.get_value("Subscription", {"team": team}, "name")
@@ -227,6 +242,8 @@ def generate_team_invoice(team: str, period_start, period_end, subscription: str
 			"currency": currency,
 			"items": lines,
 			"subtotal": subtotal,
+			"commitment_discount": discount,
+			"commitment_clawback": clawback,
 			"output_tax_type": tax["output_tax_type"],
 			"output_tax_rate": tax["output_tax_rate"],
 			"output_tax_amount": tax["output_tax_amount"],
@@ -240,6 +257,7 @@ def generate_team_invoice(team: str, period_start, period_end, subscription: str
 			"amount_paid": 0,
 		}
 	).insert(ignore_permissions=True)
+	commitments.mark_breached(commitment)
 	return invoice.name
 
 

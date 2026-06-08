@@ -13,6 +13,7 @@
   "unit",
   "column_break_head",
   "billing_type",
+  "pricing_mode",
   "billing_interval"
  ],
  "fields": [
@@ -48,6 +49,14 @@
    "label": "Billing Type",
    "options": "fixed\nmetered",
    "reqd": 1
+  },
+  {
+   "fieldname": "pricing_mode",
+   "fieldtype": "Select",
+   "label": "Pricing Mode",
+   "options": "grandfathered\nlive",
+   "default": "grandfathered",
+   "description": "grandfathered = rate locked at provision (like bundles). live = rate read from the current Catalog Rate each period, no allowance (depreciating storage, e.g. snapshot). See ADR 0002."
   },
   {
    "default": "monthly",

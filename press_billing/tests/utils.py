@@ -57,6 +57,7 @@ def make_addon(name, rates=None, **kwargs):
 			"unit": kwargs.get("unit", "GB"),
 			"billing_type": kwargs.get("billing_type", "metered"),
 			"billing_interval": kwargs.get("billing_interval", "monthly"),
+			"pricing_mode": kwargs.get("pricing_mode", "grandfathered"),
 		}
 	)
 	doc.insert(ignore_permissions=True)
