@@ -153,29 +153,28 @@ stateDiagram-v2
 
 You can pay as you go, or you can put money on account ahead of time as credits.
 The thing we care about most here is trust: the balance in your wallet has to be
-something you can rely on, down to the last paisa. So instead of keeping a single
-number we keep nudging up and down, we keep a ledger — a permanent, ordered list
-where every credit you buy and every bit you spend is its own entry that's never
-edited or erased. Your balance is simply that list added up. Because nothing is
-ever overwritten, the running total can't quietly drift, and you can always trace
-exactly where every credit came from and where it went.
+something you can rely on, down to the last paisa. So the wallet works like a
+proper accounting ledger, the same credit-and-debit shape you'd see in ERPNext.
+Every time money goes in it's a **credit**; every time it's spent it's a
+**debit**; and each line carries the **balance remaining** right after that
+transaction. Nothing is ever edited or erased — a correction is just another
+line — so the running balance can't quietly drift, and you can always read your
+wallet top to bottom and see exactly how you got to today's number.
 
-```mermaid
-flowchart TB
-    Buy[You buy credits] -->|+ entry| Ledger[(Credit ledger<br/>permanent, append-only)]
-    Adj[Admin adjustment] -->|+ / − entry| Ledger
-    Refund[Overcharge refund] -->|+ entry| Ledger
-    Spend[A bill is settled] -->|− entry| Ledger
-    Ledger -->|all entries added up| Wallet[Your wallet balance]
-```
+| Date | What happened | Credit | Debit | Balance |
+|---|---|---:|---:|---:|
+| 1 Mar | Bought credits | ₹5,000 | | ₹5,000 |
+| 1 Apr | April invoice settled | | ₹1,200 | ₹3,800 |
+| 12 Apr | Refund for overcharge | ₹150 | | ₹3,950 |
+| 1 May | May invoice settled | | ₹1,400 | ₹2,550 |
 
-Buying credits is the same simple two-step you'd expect — we set up the purchase
-with the payment provider, and the moment it's confirmed, a credit entry lands in
-your ledger and your balance goes up. Spending them is just the other direction:
-when a bill is settled from your wallet, that's a matching entry going out. Two
-people (or two jobs) can never accidentally spend the same credit twice — the
-wallet is locked for the instant a spend is recorded, so the books always
-balance.
+Buying credits is the simple two-step you'd expect — we set up the purchase with
+the payment provider, and the moment it's confirmed a credit line lands in your
+ledger and the balance goes up. Spending is just the other column: when a bill is
+settled from your wallet, a debit line goes in and the balance comes down. Two
+people (or two background jobs) can never accidentally spend the same credit
+twice — the wallet is locked for the instant a transaction is recorded, so the
+books always balance.
 
 ### Paying — credits first, then your card
 
